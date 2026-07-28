@@ -189,8 +189,11 @@ Outputs: `nixosModules.default`, `lib`, `packages.<system>.cdi-nvidia-device-lab
 
 Blocking for phases 4+ only. Phases 1–3 proceed regardless.
 
-- **Confirm ceph OSD/mon placement** (`ceph osd tree`, `ceph -s`). This decides
-  which side keeps the existing cluster. See §4.1.
+- ~~Confirm ceph OSD placement.~~ **Done — see §4.1.** The existing cluster
+  follows ceph to the DC.
+- **Resolve the ceph failure-domain break (§4.2).** This is the hard blocker on
+  phase 5, and probably needs hardware. Needs `ceph osd pool ls detail` and
+  `ceph df`.
 - Confirm which fluxcd/GitOps repo drives cluster workloads — the second cluster
   needs its own, or its own path within the existing one.
 - Confirm `fimbria`'s site, and whether each cluster gets its own gateway.
@@ -262,6 +265,15 @@ deploy through.
 
 ### Phase 4 — stand up the second cluster
 
+Per §4.1 the *existing* cluster is the one bound for the DC, so the new cluster
+is the **home** cluster and it receives 8 of the 11 nodes. Everything here
+happens while all hosts are still on the home LAN.
+
+0. **Migrate the control plane first.** `thing-0/1/2` are the current servers and
+   all three are leaving the cluster. Promote `cellar`, `rama` and `thunk-0` to
+   `role = "server"`, let etcd converge, then retire the `thing-*` servers one at
+   a time keeping an odd member count. Do the same for the ceph mon label (§4.3).
+   Only once the DC-bound trio owns both quorums does node peeling begin.
 1. Add `clusters.<new>` with its own zone, gateway, token secret, and state
    directory — initially with no members.
 2. Pick the first node. Drain and remove it from the old cluster:
@@ -275,52 +287,111 @@ deploy through.
 4. **Wipe k3s state on that host before rebuilding.** `/var/lib/rancher/k3s` and
    the configured `stateDirectory` cache the old server URL and token; a node
    that keeps them will happily rejoin the cluster you just removed it from.
-5. Repeat per node. Grow to 3 servers before putting real load on it.
+5. Repeat per node. Take `thing-0/1/2` early so the home cluster has 3 servers,
+   then `thing-3/4`, `toothless`, `system3`, `grendal`.
+
+Note that `thing-0/1/2` carry 52.75 TiB of OSDs. Those must be drained from ceph
+(`ceph osd out`, wait for rebalance) *before* the hosts leave the old cluster,
+and the DC-bound hosts have to have room for the data — see §4.2.
 
 ### Phase 5 — migrate workloads, then move hardware
 
-1. **Storage first.** The new cluster needs a working storage class before
-   anything stateful lands on it.
+1. **Storage first.** The home cluster needs a working storage class before
+   anything stateful lands on it — a fresh Rook cluster on `thing-0/1/2`, subject
+   to the SSD constraint in §4.2/§4.4.
 2. Per workload: repoint flux, migrate PVC data, cut DNS.
-3. Physical relocation last, once the DC-bound nodes are in their own cluster
-   and drained of everything that should stay home.
+3. **Physical relocation last**, once `cellar`/`rama`/`thunk-0` are the sole
+   members of the existing cluster and hold the whole ceph cluster. Everything
+   before this point happens on the home LAN.
 
 ---
 
 ## 4. Risks and gotchas
 
-### 4.1 Migration direction (decide in phase 0)
+### 4.1 Migration direction — resolved: the existing cluster goes to the DC
 
 Rack-mounted hosts leaving for the DC: **`rama`, `cellar`, `thunk-0`** — all
 three currently *agents*. Staying home: `thing-0/1/2` (masters + ingress +
-ceph-mon), `thing-3/4` (ceph-mon), `toothless`, `system3`, `grendal`.
+ceph-mon), `thing-3/4` (ceph-mon, no OSDs), `toothless`, `system3`, `grendal`
+(GPU, no OSDs).
 
-Keeping the *existing* cluster on the DC side therefore means removing 8 of 11
-nodes, including the entire control plane, and migrating etcd quorum across the
-home uplink one master at a time. Standing up a fresh 3-node cluster in the DC
-and leaving the existing cluster at home is dramatically less work and less
-risky.
+Raw OSD capacity from `ceph osd tree` (total 191.09 TiB):
 
-The counter-argument was ceph data locality — but etcd holds no bulk data, and
-ceph data lives on the OSD disks, which travel with the hardware either way. A
-Rook cluster can be re-formed around relocated OSDs. **Verify OSD placement
-before committing to a direction.**
+| | HDD | SSD | Total | Share |
+|---|---|---|---|---|
+| → DC (cellar, rama, thunk-0) | 118.23 | 16.37 | **134.61** | 70.4% |
+| stays home (thing-0/1/2) | 52.75 | 3.73 | **56.48** | 29.6% |
 
-### 4.2 Ceph cannot span the WAN
+`cellar` alone is 51% of the cluster. Home cannot absorb the DC-bound data, so
+the existing ceph cluster must go to the DC, and the k8s cluster should follow
+it — keeping Rook's CRs, mon quorum and OSD metadata in the same etcd is the one
+thing least worth gambling on.
 
-Mons and OSDs need a low-latency, high-bandwidth link. The ceph cluster must
-land wholly on one side of the split. Note that `ceph-mon=allowed` is labelled
-on `thing-0..4`, all of which stay home.
+An earlier draft argued the reverse on the grounds that migrating the control
+plane would span etcd quorum across the home uplink. That was wrong: the cluster
+reshuffling happens while every host is still on the home LAN, and the physical
+relocation is the *last* step. Promoting `cellar`/`rama`/`thunk-0` to servers and
+retiring `thing-0/1/2` is an ordinary on-LAN k3s operation.
 
-### 4.3 Home uplink becomes the DC's path to everything
+### 4.2 The ceph failure domain breaks on both sides — hard blocker
 
-You described the new place's wireless internet as lousy. Anything home-side
-that depends on a DC endpoint pays that cost on every request. The ~70 entries
-in `kubeInternalEndpoints` need an endpoint-by-endpoint review — Home Assistant
-reaching `wyoming-whisper-*`, `kokoro`, `piper`, `tts`, `stt`, and `ollama`
-across a slow link will be very noticeable.
+Counting *hosts* per device class rather than capacity:
 
-### 4.4 Smaller items
+| Device class | Now | → DC | → Home |
+|---|---|---|---|
+| HDD hosts | 5 (cellar, thing-0/1/2, thunk-0) | **2** (cellar, thunk-0) | 3 (thing-0/1/2) |
+| SSD hosts | 3 (rama, thing-1, thunk-0) | **2** (rama, thunk-0) | **1** (thing-1) |
+
+With a `host` failure domain and `size=3`, a device-class-pinned pool needs three
+distinct hosts of that class. The SSD pool works today because `rama`, `thing-1`
+and `thunk-0` are exactly three — and the split puts two on one side and one on
+the other. **The existing SSD pool cannot be reconstituted on either side.** The
+DC also drops to two HDD hosts while holding 118 TiB.
+
+If the pools instead sit on `root default` with no device-class rule, both sides
+land at exactly three hosts: workable, but with zero maintenance headroom — one
+host down for a kernel upgrade leaves the cluster degraded with nowhere to
+re-replicate.
+
+Confirm which case applies before phase 5:
+
+```bash
+kubectl exec -n rook-ceph deployments/rook-ceph-tools -- ceph osd pool ls detail
+kubectl exec -n rook-ceph deployments/rook-ceph-tools -- ceph df
+```
+
+`ceph df` also decides whether phase 5 is possible at all: evacuating
+`thing-0/1/2`'s 56.48 TiB onto the DC-bound hosts has to fit inside 134.61 TiB
+raw before those hosts can leave the cluster.
+
+Likely remedies: add SSDs to `thing-0` and `thing-2` (fixes home), and move
+`thing-1`'s `osd.10` SSD or add one to `cellar` (fixes the DC). A fourth OSD host
+per side would also restore rebuild headroom.
+
+### 4.3 Mon placement must move with the cluster
+
+`ceph-mon=allowed` is labelled on `thing-0..4`, all of which stay home. Before
+`thing-0/1/2` leave the cluster the label has to move to `cellar`, `rama` and
+`thunk-0` so Rook can re-place the mon quorum. That is exactly three eligible
+hosts, i.e. the minimum, with no spare.
+
+### 4.4 Home cluster storage profile
+
+The home cluster keeps three GPU nodes (`toothless`, `system3`, `grendal`) — none
+of which carry OSDs — and ends up with 52.75 TiB HDD across `thing-0/1/2` plus a
+single 3.73 TiB SSD. At `size=3` that is roughly 17.6 TiB usable HDD and **no
+replicated SSD pool at all**. For an AI-agent workload, model storage would come
+off HDD. Adding SSDs to `thing-0` and `thing-2` solves this and §4.2 together.
+
+### 4.5 WAN exposure (assessed — low)
+
+Home Assistant and its supporting services all land in the home cluster, so the
+latency-sensitive paths stay on the LAN. The only cross-WAN access is the HA UI
+from outside the network over Tailscale, which is fine. Worth re-checking the ~70
+`kubeInternalEndpoints` once the per-cluster split is written down, to confirm
+nothing latency-sensitive ends up on the wrong side.
+
+### 4.6 Smaller items
 
 - `dnsFilterProxy.clusterUpstreams` must point at the *local* cluster's ingress
   nodes at each site, not a single global list.
