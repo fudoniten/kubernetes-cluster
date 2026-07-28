@@ -191,9 +191,9 @@ Blocking for phases 4+ only. Phases 1–3 proceed regardless.
 
 - ~~Confirm ceph OSD placement.~~ **Done — see §4.1.** The existing cluster
   follows ceph to the DC.
-- **Resolve the ceph failure-domain break (§4.2).** This is the hard blocker on
-  phase 5, and probably needs hardware. Needs `ceph osd pool ls detail` and
-  `ceph df`.
+- **Resolve the DC capacity shortfall (§4.2).** Confirmed hard blocker on phase
+  5: 110 TiB of HDD data against 118.23 TiB of DC HDD. Needs added hardware or a
+  smaller `ceph-filesystem-data0`. Run `ceph osd crush rule dump` to size it.
 - Confirm which fluxcd/GitOps repo drives cluster workloads — the second cluster
   needs its own, or its own path within the existing one.
 - Confirm `fimbria`'s site, and whether each cluster gets its own gateway.
@@ -333,40 +333,58 @@ reshuffling happens while every host is still on the home LAN, and the physical
 relocation is the *last* step. Promoting `cellar`/`rama`/`thunk-0` to servers and
 retiring `thing-0/1/2` is an ordinary on-LAN k3s operation.
 
-### 4.2 The ceph failure domain breaks on both sides — hard blocker
+### 4.2 The DC cannot hold the ceph data — hard blocker, needs hardware
 
-Counting *hosts* per device class rather than capacity:
+All pools are `size 3 min_size 2`. From `ceph df`:
 
-| Device class | Now | → DC | → Home |
+| Class | Raw size | Raw used | %used |
 |---|---|---|---|
-| HDD hosts | 5 (cellar, thing-0/1/2, thunk-0) | **2** (cellar, thunk-0) | 3 (thing-0/1/2) |
-| SSD hosts | 3 (rama, thing-1, thunk-0) | **2** (rama, thunk-0) | **1** (thing-1) |
+| hdd | 171 TiB | **110 TiB** | 64.3% |
+| ssd | 20 TiB | 1.4 TiB | 7.0% |
 
-With a `host` failure domain and `size=3`, a device-class-pinned pool needs three
-distinct hosts of that class. The SSD pool works today because `rama`, `thing-1`
-and `thunk-0` are exactly three — and the split puts two on one side and one on
-the other. **The existing SSD pool cannot be reconstituted on either side.** The
-DC also drops to two HDD hosts while holding 118 TiB.
+Essentially all of it is `ceph-filesystem-data0` (33 TiB stored → 99 TiB raw)
+and `ceph-blockpool` (4 TiB → 12 TiB).
 
-If the pools instead sit on `root default` with no device-class rule, both sides
-land at exactly three hosts: workable, but with zero maintenance headroom — one
-host down for a kernel upgrade leaves the cluster degraded with nowhere to
-re-replicate.
+After the split the DC has `cellar` (98.23) + `thunk-0` (20.01) = **118.23 TiB
+of HDD** to hold **110 TiB of data — 93% full.** Ceph's `nearfull_ratio` is 0.85
+and `backfillfull_ratio` is 0.90, so the backfill would not even complete; it
+would stall and block writes. This conclusion holds regardless of CRUSH
+topology.
 
-Confirm which case applies before phase 5:
+Minimum HDD to add at the DC:
+
+| Target | HDD needed | Short by |
+|---|---|---|
+| Clear nearfull (85%) | 129.4 TiB | ~11 TiB |
+| Comfortable (70%) | 157.1 TiB | ~39 TiB |
+
+**Still to confirm — the HDD failure domain:**
 
 ```bash
-kubectl exec -n rook-ceph deployments/rook-ceph-tools -- ceph osd pool ls detail
-kubectl exec -n rook-ceph deployments/rook-ceph-tools -- ceph df
+kubectl exec -n rook-ceph deployments/rook-ceph-tools -- ceph osd crush rule dump
 ```
 
-`ceph df` also decides whether phase 5 is possible at all: evacuating
-`thing-0/1/2`'s 56.48 TiB onto the DC-bound hosts has to fit inside 134.61 TiB
-raw before those hosts can leave the cluster.
+- If **`osd`**: the 93% figure above is the whole problem, and ~11–39 TiB of
+  added HDD resolves it. Most likely, since `ceph-filesystem-data0` reports 33
+  TiB stored with 14 TiB still available, which host-domain math cannot produce
+  given `cellar`'s dominance.
+- If **`host`**: far worse. Two HDD hosts cannot place three replicas at all.
+  Because `cellar` can hold at most one replica of any PG, usable capacity is
+  bounded by `(total_hdd − cellar)/2` ≈ **10 TiB** against 37 TiB stored. That
+  needs roughly **54 TiB of additional non-`cellar` HDD**, ideally spread over
+  two hosts.
 
-Likely remedies: add SSDs to `thing-0` and `thing-2` (fixes home), and move
-`thing-1`'s `osd.10` SSD or add one to `cellar` (fixes the DC). A fourth OSD host
-per side would also restore rebuild headroom.
+Options: add HDD at the DC, shrink `ceph-filesystem-data0`, or send a fourth HDD
+host along — noting the `thing-*` boxes are only 16–20 TiB each, which closes the
+gap only in the `osd`-domain case.
+
+### 4.2b The SSD pool break is real but low-stakes
+
+`rama`, `thing-1` and `thunk-0` are the only SSD hosts, so the split leaves two
+at the DC and one at home — below `size=3` on both sides. But `ssd-pool` holds
+**803 MiB** against 5.4 TiB available, and SSD raw is 7% used. Rebuilding it on
+either side is cheap. An earlier revision of this document called this the
+sharpest finding; §4.2 is, by a wide margin.
 
 ### 4.3 Mon placement must move with the cluster
 
