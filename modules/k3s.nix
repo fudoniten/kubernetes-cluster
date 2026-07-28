@@ -52,8 +52,8 @@ with lib;
         fi
       '';
 
-      systemPackages = cluster.nodePackages
-        ++ (optionals isServer cluster.serverPackages);
+      systemPackages = (optionals isServer cluster.serverPackages)
+        ++ cluster.nodePackages;
     };
 
     services.k3s = {
@@ -70,8 +70,10 @@ with lib;
         # name a client might use to reach them.
         serverFqdns = filter (fqdn: fqdn != null)
           (mapAttrsToList (_: n: n.fqdn) (clusterLib.serversOf cluster));
+        # Explicit SANs first, derived ones after, so a consumer can pin the
+        # exact flag order it emitted before adopting this module.
         sanFlags = optionals isServer
-          (map (san: "--tls-san=${san}") (unique (serverFqdns ++ cluster.tlsSans)));
+          (map (san: "--tls-san=${san}") (unique (cluster.tlsSans ++ serverFqdns)));
 
         # GPU base labels are applied here rather than written back into
         # `node.labels`, which a module cannot define without a cycle.
