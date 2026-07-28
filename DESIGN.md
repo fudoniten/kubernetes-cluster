@@ -219,7 +219,7 @@ Blocking for phases 4+ only. Phases 1–3 proceed regardless.
 
 **Gate:** `nix flake check` green.
 
-### Phase 2 — Fudo wrapper in nixos-config
+### Phase 2 — Fudo wrapper in nixos-config ✅ written, not yet evaluated
 
 1. Add the flake to `flake.nix` inputs and `lib/modules.nix`.
 2. Rewrite `services/kubernetes/` as a thin wrapper:
@@ -236,7 +236,7 @@ Blocking for phases 4+ only. Phases 1–3 proceed regardless.
 
 **Gate:** the flake evaluates.
 
-### Phase 3 — move the existing cluster onto the named API
+### Phase 3 — move the existing cluster onto the named API ⚠️ written; diff gate not yet run
 
 A **pure refactor with a byte-identical result**. Nothing about the running
 cluster changes.
