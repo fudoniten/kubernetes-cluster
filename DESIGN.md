@@ -202,7 +202,7 @@ Blocking for phases 4+ only. Phases 1–3 proceed regardless.
 - Pick cluster names. They appear in secret names and state paths, so choose
   once (suggested: `seattle` and `dc0`).
 
-### Phase 1 — build the generic flake
+### Phase 1 — build the generic flake ✅ written, not yet evaluated
 
 1. Flake skeleton: nixpkgs-only input, `nixosModules.default`, `lib`.
 2. Package `cdi-nvidia-device-labeler.bb` (moved from `nixos-config/static/`).
@@ -260,8 +260,17 @@ nix build .#nixosConfigurations.<h>.config.system.build.toplevel --out-link /tmp
 nvd diff /tmp/before-<h> /tmp/after-<h>
 ```
 
-Every diff should be empty. A non-empty diff is a porting bug, not something to
-deploy through.
+Every diff should be empty, with **one known exception**: on GPU nodes the
+`gpu-node-tagger` unit's `ExecStart` necessarily changes, because the labeler is
+now a packaged binary (`${labeler}/bin/cdi-nvidia-device-labeler`) rather than
+`bb` invoked against a script path in `nixos-config/static/`. That diff should be
+reviewed and accepted; any *other* non-empty diff is a porting bug, not something
+to deploy through.
+
+The TLS SAN flags are a second place to look closely. The original emitted them
+as a single space-joined string inside one list element; the port emits one
+element per SAN. These join to the same command line, so the unit should be
+identical — but confirm rather than assume.
 
 ### Phase 4 — stand up the second cluster
 
@@ -374,9 +383,37 @@ kubectl exec -n rook-ceph deployments/rook-ceph-tools -- ceph osd crush rule dum
   needs roughly **54 TiB of additional non-`cellar` HDD**, ideally spread over
   two hosts.
 
-Options: add HDD at the DC, shrink `ceph-filesystem-data0`, or send a fourth HDD
-host along — noting the `thing-*` boxes are only 16–20 TiB each, which closes the
-gap only in the `osd`-domain case.
+**Resolution (chosen): one additional rackmount HDD host at the DC.**
+
+Home only needs 10–20 TB, so most data stays with the DC. Under `host` domain at
+`size=3`, DC usable capacity is `(non-cellar HDD)/2` — `cellar` is capped at one
+replica per PG no matter how large it grows:
+
+| New server HDD | DC usable at size=3 |
+|---|---|
+| 0 | 10.0 TiB |
+| **24 TiB** | **22.0 TiB** |
+| 40 TiB | 30.0 TiB |
+| 60 TiB | 40.0 TiB |
+
+If home takes ~15 TiB of the ~37 TiB total, the DC needs ~22 TiB, so **~24 TiB in
+the new server sustains full `size=3`**. Reducing redundancy is therefore
+avoidable rather than merely deferrable, and it skips a later 22 TiB rebalance.
+
+Two corollaries:
+
+- **Put the drives in the new server, not `cellar`.** Under `host` domain, HDDs
+  added to `cellar` contribute *zero* usable capacity, not merely zero
+  redundancy. Only under `osd` domain does filling `cellar` help — another
+  reason to run the crush rule dump before buying.
+- **Home needs no storage changes.** `thing-0/1/2` hold 16.37 / 16.37 / 20.01
+  TiB → ~16.4 TiB usable at `size=3`, inside the 10–20 TB target. Each `thing-*`
+  has exactly one HDD (`osd.0`, `osd.2`, `osd.5`), so there are no spare drives to
+  relocate; freeing capacity would mean emptying a host and dropping below three.
+
+If the new hardware slips, the interim fallback is `size=2`/`min_size=2` at the
+DC, which requires every node up — acceptable short-term, and reversible once the
+third host lands.
 
 ### 4.2b The SSD pool break is real but low-stakes
 
