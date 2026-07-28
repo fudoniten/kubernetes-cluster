@@ -1,10 +1,15 @@
 # Core k3s service: cluster init, joining, roles, labels and shutdown ordering.
-{ lib, pkgs, clusterLib, nodeName, cluster, node, isMember, isServer, isPrimary
-, isIngress, isGpu, primaryAddress, ... }:
+{ config, lib, pkgs, ... }:
 
 with lib;
 
-{
+let
+  clusterLib = import ../lib { inherit lib; };
+
+  inherit (clusterLib.mkContext config)
+    cluster node isMember isServer isPrimary isIngress isGpu primaryAddress;
+
+in {
   config = mkIf isMember {
     networking = {
       useHostResolvConf = true;

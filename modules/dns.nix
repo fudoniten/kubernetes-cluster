@@ -1,9 +1,12 @@
 # Cluster DNS: a CoreDNS ConfigMap dropped in as a k3s custom manifest.
-{ lib, cluster, isMember, ... }:
+{ config, lib, ... }:
 
 with lib;
 
 let
+  inherit (import ../lib { inherit lib; }) mkContext;
+  inherit (mkContext config) cluster isMember;
+
   defaultCorefile = ''
     .:53 {
       errors

@@ -3,60 +3,35 @@
 # Every host in a fleet evaluates the same set of cluster definitions; this
 # module works out which one (if any) the host belongs to and configures it
 # accordingly. Hosts named in no cluster get nothing.
-{ config, lib, pkgs, ... }:
+#
+# Submodules are imported as plain paths and each resolves its own context via
+# `clusterLib.mkContext`. Do not go back to pre-applying arguments
+# (`import ./k3s.nix { inherit config ...; }`): deriving the import list from
+# `config` is what the module system cannot do, and it recurses.
+{ config, lib, ... }:
 
 with lib;
 
 let
   clusterLib = import ../lib { inherit lib; };
 
-  cfg = config.services.kubernetes-cluster;
-
-  nodeName = cfg.nodeName;
-
-  # Clusters claiming this host. More than one is rejected below; taking the
-  # head keeps the rest of the evaluation total in the presence of that error,
-  # so the assertion is what the user sees rather than a stray attribute error.
-  memberOf = clusterLib.clustersFor nodeName cfg.clusters;
-  clusterName = if memberOf == [ ] then null else head memberOf;
-  isMember = clusterName != null;
-
-  # Placeholder cluster/node for non-members. Nothing reads these — every
-  # submodule guards on `isMember` — but they keep option access total.
-  cluster = if isMember then cfg.clusters.${clusterName} else null;
-  node = if isMember then cluster.nodes.${nodeName} else null;
-
-  isServer = isMember && node.role == "server";
-  isPrimary = isMember && cluster.primaryMaster == nodeName;
-  isIngress = isMember && node.ingress;
-  isGpu = isMember && node.gpu.enable;
-
-  primaryIsNode = isMember && (cluster.nodes ? ${cluster.primaryMaster});
-
-  # Address the rest of the cluster joins through.
-  primaryAddress = if isMember && cluster.nodes ? ${cluster.primaryMaster} then
-    cluster.nodes.${cluster.primaryMaster}.address
-  else
-    null;
-
-  ctx = {
-    inherit config lib pkgs clusterLib cfg nodeName clusterName cluster node
-      isMember isServer isPrimary isIngress isGpu primaryAddress;
-  };
+  inherit (clusterLib.mkContext config)
+    nodeName memberOf clusterName isMember cluster primaryIsNode isServer
+    isPrimary isIngress isGpu;
 
 in {
   imports = [
-    (import ./options.nix { inherit config lib pkgs clusterLib; })
-    (import ./k3s.nix ctx)
-    (import ./dns.nix ctx)
-    (import ./manifests.nix ctx)
-    (import ./gateway.nix ctx)
-    (import ./nvidia.nix ctx)
-    (import ./storage.nix ctx)
+    ./options.nix
+    ./k3s.nix
+    ./dns.nix
+    ./manifests.nix
+    ./gateway.nix
+    ./nvidia.nix
+    ./storage.nix
   ];
 
   config = {
-    services.kubernetes-cluster.membership = mkIf isMember {
+    services.kubernetes-cluster.membership = {
       cluster = clusterName;
       node = nodeName;
       inherit isServer isPrimary isIngress isGpu;
@@ -116,12 +91,13 @@ in {
       '';
     }) (cluster.endpoints.internal ++ cluster.endpoints.external)));
 
-    warnings = optional (isMember && (mod (length (attrNames
-      (clusterLib.serversOf cluster))) 2) == 0) ''
-        Cluster '${toString clusterName}' has an even number of server nodes
-        (${
-          toString (length (attrNames (clusterLib.serversOf cluster)))
-        }). etcd needs an odd count to establish quorum.
-      '';
+    warnings = let
+      serverCount = length (attrNames (clusterLib.serversOf cluster));
+    in optional (isMember && (mod serverCount 2) == 0) ''
+      Cluster '${toString clusterName}' has an even number of server nodes
+      (${
+        toString serverCount
+      }). etcd needs an odd count to establish quorum.
+    '';
   };
 }

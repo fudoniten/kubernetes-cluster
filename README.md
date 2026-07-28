@@ -79,9 +79,10 @@ outside the cluster it fronts. A single host can gateway several clusters; each
 contributes its own virtual hosts and forwarded ports.
 
 **Membership.** `services.kubernetes-cluster.membership` is a read-only summary
-(`cluster`, `node`, `isServer`, `isPrimary`, `isIngress`, `isGpu`) for consumers
-that need to derive their own configuration from the host's role. It is `null` on
-non-members.
+for consumers that need to derive their own configuration from the host's role:
+`cluster`, `node`, `isServer`, `isPrimary`, `isIngress`, `isGpu`. On a
+non-member, `membership.cluster` is `null` and the booleans are all `false` —
+test the former rather than looking for an absent attrset.
 
 ## What this module does not do
 

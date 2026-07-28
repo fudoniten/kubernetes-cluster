@@ -1,9 +1,11 @@
 # Option declarations for services.kubernetes-cluster.
-{ config, lib, pkgs, clusterLib, ... }:
+{ config, lib, pkgs, ... }:
 
 with lib;
 
 let
+  clusterLib = import ../lib { inherit lib; };
+
   endpointType = types.submodule {
     options = {
       name = mkOption {
@@ -373,16 +375,51 @@ in {
       '';
     };
 
-    membership = mkOption {
-      type = types.nullOr (types.attrsOf types.anything);
-      readOnly = true;
-      default = null;
-      description = ''
-        Read-only summary of this host's role, for consumers that need to
-        derive configuration from it. Null when the host is not a cluster
-        member; otherwise an attrset with `cluster`, `node`, `isServer`,
-        `isPrimary`, `isIngress` and `isGpu`.
-      '';
+    # Read-only summary of this host's role, for consumers that need to derive
+    # their own configuration from it. Declared as an option group rather than
+    # one option holding a freeform attrset: `attrsOf anything` merges deeply,
+    # which puts evaluation pressure on a value derived from every cluster
+    # definition in the fleet.
+    membership = {
+      cluster = mkOption {
+        type = types.nullOr types.str;
+        readOnly = true;
+        description = ''
+          Name of the cluster this host belongs to, or null if it belongs to
+          none. Consumers should test this rather than looking for an absent
+          attrset.
+        '';
+      };
+
+      node = mkOption {
+        type = types.str;
+        readOnly = true;
+        description = "This host's node name.";
+      };
+
+      isServer = mkOption {
+        type = types.bool;
+        readOnly = true;
+        description = "Whether this host runs the control plane.";
+      };
+
+      isPrimary = mkOption {
+        type = types.bool;
+        readOnly = true;
+        description = "Whether this host initialises its cluster.";
+      };
+
+      isIngress = mkOption {
+        type = types.bool;
+        readOnly = true;
+        description = "Whether this host participates in load balancing.";
+      };
+
+      isGpu = mkOption {
+        type = types.bool;
+        readOnly = true;
+        description = "Whether this host runs the NVIDIA stack.";
+      };
     };
   };
 }

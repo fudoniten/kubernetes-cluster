@@ -1,9 +1,13 @@
 # Applies YAML in /etc/k3s to the cluster, once, from the primary master.
-{ lib, pkgs, cluster, isMember, isPrimary, ... }:
+{ config, lib, pkgs, ... }:
 
 with lib;
 
-{
+let
+  inherit (import ../lib { inherit lib; }) mkContext;
+  inherit (mkContext config) cluster isMember isPrimary;
+
+in {
   config = mkIf isMember (mkMerge [
     {
       environment.etc = mapAttrs' (name: text:

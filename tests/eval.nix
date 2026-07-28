@@ -37,7 +37,8 @@ let
       clusterInit = cfg.services.k3s.clusterInit;
       tokenFile = cfg.services.k3s.tokenFile;
       extraFlags = cfg.services.k3s.extraFlags;
-      membership = cfg.services.kubernetes-cluster.membership;
+      inherit (cfg.services.kubernetes-cluster.membership)
+        cluster isServer isPrimary isIngress isGpu;
       nginxEnabled = cfg.services.nginx.enable;
       cephModules = intersectLists cfg.boot.kernelModules [ "rbd" "ceph" ];
       containerdEnabled = cfg.virtualisation.containerd.enable;
@@ -57,14 +58,11 @@ let
         "--node-label=tier=control"
         "--node-label=svccontroller.k3s.cattle.io/enablelb=true"
       ];
-      membership = {
-        cluster = "alpha";
-        node = "a0";
-        isServer = true;
-        isPrimary = true;
-        isIngress = true;
-        isGpu = false;
-      };
+      cluster = "alpha";
+      isServer = true;
+      isPrimary = true;
+      isIngress = true;
+      isGpu = false;
       nginxEnabled = false;
       cephModules = [ "rbd" "ceph" ];
       containerdEnabled = false;
@@ -77,14 +75,11 @@ let
       serverAddr = "https://192.168.1.10:6443";
       clusterInit = false;
       tokenFile = "/run/alpha/token";
-      membership = {
-        cluster = "alpha";
-        node = "a1";
-        isServer = false;
-        isPrimary = false;
-        isIngress = false;
-        isGpu = true;
-      };
+      cluster = "alpha";
+      isServer = false;
+      isPrimary = false;
+      isIngress = false;
+      isGpu = true;
       nginxEnabled = false;
       cephModules = [ "rbd" "ceph" ];
       containerdEnabled = true;
@@ -98,14 +93,11 @@ let
       # beta's token, not alpha's: the two clusters must not bleed into
       # each other.
       tokenFile = "/run/beta/token";
-      membership = {
-        cluster = "beta";
-        node = "b0";
-        isServer = true;
-        isPrimary = true;
-        isIngress = false;
-        isGpu = false;
-      };
+      cluster = "beta";
+      isServer = true;
+      isPrimary = true;
+      isIngress = false;
+      isGpu = false;
       cephModules = [ ];
       containerdEnabled = false;
     };
@@ -120,14 +112,14 @@ let
     # Gateway host: fronts alpha but runs no kubelet.
     gw = {
       k3sEnabled = false;
-      membership = null;
+      cluster = null;
       nginxEnabled = true;
     };
 
     # Named by no cluster: gets nothing at all.
     outsider = {
       k3sEnabled = false;
-      membership = null;
+      cluster = null;
       nginxEnabled = false;
       containerdEnabled = false;
     };
@@ -135,7 +127,7 @@ let
 
   # Compare only the keys each expectation actually names, so a test can assert
   # one fact about a host without restating all of them.
-  mismatches = flatten (mapAttrsToList (host: want:
+  mismatches = concatLists (mapAttrsToList (host: want:
     mapAttrsToList (key: wanted:
       let got = actual.${host}.${key};
       in optional (got != wanted) {

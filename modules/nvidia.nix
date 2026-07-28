@@ -1,10 +1,13 @@
 # NVIDIA GPU support: containerd with the nvidia runtime, CDI device injection,
 # and a tagger that labels nodes by the devices they actually carry.
-{ config, lib, pkgs, cluster, nodeName, isGpu, ... }:
+{ config, lib, pkgs, ... }:
 
 with lib;
 
 let
+  inherit (import ../lib { inherit lib; }) mkContext;
+  inherit (mkContext config) cluster nodeName isGpu;
+
   containerdSocket = "/run/containerd/containerd.sock";
 
   deviceLabelMappings = pkgs.writeText "gpu-device-label-mappings.json"

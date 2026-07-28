@@ -4,11 +4,15 @@
 # Unlike the other submodules this is not gated on cluster membership: the
 # gateway is frequently a host outside the cluster. A single host may gateway
 # several clusters, so every matching cluster contributes.
-{ lib, clusterLib, cfg, nodeName, ... }:
+{ config, lib, ... }:
 
 with lib;
 
 let
+  clusterLib = import ../lib { inherit lib; };
+
+  inherit (clusterLib.mkContext config) cfg nodeName;
+
   gatewayedClusters = filterAttrs
     (_: cluster: cluster.enable && cluster.gateway.enable && cluster.gateway.host == nodeName)
     cfg.clusters;

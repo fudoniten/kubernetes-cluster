@@ -2,11 +2,15 @@
 #
 # k3s resolves mount helpers via the conventional /sbin and /usr/sbin paths,
 # neither of which exists on NixOS, so mount.ceph is symlinked into place.
-{ lib, pkgs, cluster, isMember, ... }:
+{ config, lib, pkgs, ... }:
 
 with lib;
 
-{
+let
+  inherit (import ../lib { inherit lib; }) mkContext;
+  inherit (mkContext config) cluster isMember;
+
+in {
   config = mkIf (isMember && cluster.storage.ceph.enable) {
     boot.kernelModules = [ "rbd" "libceph" "ceph" ];
 
