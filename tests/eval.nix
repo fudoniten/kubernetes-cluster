@@ -42,6 +42,12 @@ let
       nginxEnabled = cfg.services.nginx.enable;
       cephModules = intersectLists cfg.boot.kernelModules [ "rbd" "ceph" ];
       containerdEnabled = cfg.virtualisation.containerd.enable;
+      vhosts = sort lessThan (attrNames cfg.services.nginx.virtualHosts);
+      # Normalised: the nat.forwardPorts submodule also carries `loopbackIPs`,
+      # which this test has no opinion about.
+      forwardPorts = map (rule: { inherit (rule) destination proto sourcePort; })
+        cfg.networking.nat.forwardPorts;
+      openTcpPorts = sort lessThan cfg.networking.firewall.allowedTCPPorts;
     };
 
   actual = genAttrs [ "a0" "a1" "b0" "b1" "gw" "outsider" ] factsFor;
@@ -109,19 +115,37 @@ let
       tokenFile = "/run/beta/token";
     };
 
-    # Gateway host: fronts alpha but runs no kubelet.
+    # Gateway host: fronts both clusters but runs no kubelet. Building this
+    # host's config from `cfg.clusters` is what made an earlier revision of
+    # gateway.nix recurse, so the merge across two clusters is asserted here.
     gw = {
       k3sEnabled = false;
       cluster = null;
       nginxEnabled = true;
+      vhosts = [
+        "api.alpha.example.com"
+        "api.internal.example.com"
+        "beta-api.beta.example.com"
+        "beta-api.internal.example.com"
+        "dash.internal.example.com"
+      ];
+      # Forwarded to alpha's primary master, which is not the gateway itself.
+      forwardPorts = [{
+        destination = "192.168.1.10:9000";
+        proto = "tcp";
+        sourcePort = 9000;
+      }];
+      openTcpPorts = [ 9000 ];
     };
 
-    # Named by no cluster: gets nothing at all.
+    # Named by no cluster and gatewaying none: gets nothing at all.
     outsider = {
       k3sEnabled = false;
       cluster = null;
       nginxEnabled = false;
       containerdEnabled = false;
+      vhosts = [ ];
+      forwardPorts = [ ];
     };
   };
 

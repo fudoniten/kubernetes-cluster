@@ -13,11 +13,15 @@ let
 
   inherit (clusterLib.mkContext config) cfg nodeName;
 
-  gatewayedClusters = filterAttrs
-    (_: cluster: cluster.enable && cluster.gateway.enable && cluster.gateway.host == nodeName)
+  gatewayedClusters = filterAttrs (_: cluster:
+    cluster.enable && cluster.gateway.enable && cluster.gateway.host == nodeName)
     cfg.clusters;
 
-  gatewayConfig = cluster:
+  isGateway = gatewayedClusters != { };
+
+  eachCluster = f: map f (attrValues gatewayedClusters);
+
+  virtualHostsFor = cluster:
     let
       inherit (cluster.gateway) zone internalDomain;
 
@@ -42,36 +46,59 @@ let
           locations."/".return = "301 https://${name}.kube.${zone}/";
         }) (externalHttp ++ internalHttp));
 
-      streamEndpoints = clusterLib.streamEndpoints cluster.endpoints.external;
+    in externalHosts // internalHosts;
 
-      ingressPoint = cluster.nodes.${cluster.primaryMaster}.address;
+  portsOfType = type: cluster:
+    map ({ port, ... }: port)
+    (filter (endpoint: endpoint.type == type) cluster.endpoints.external);
 
-    in {
-      services.nginx = {
-        enable = true;
-        recommendedProxySettings = true;
-        recommendedOptimisation = true;
-        recommendedGzipSettings = true;
-        recommendedTlsSettings = true;
-        virtualHosts = externalHosts // internalHosts;
-      };
+  forwardPortsFor = cluster:
+    let ingressPoint = cluster.nodes.${cluster.primaryMaster}.address;
+    in map ({ type, port, ... }: {
+      destination = "${ingressPoint}:${toString port}";
+      proto = if type == "TCP" then "tcp" else "udp";
+      sourcePort = port;
+    }) (clusterLib.streamEndpoints cluster.endpoints.external);
 
-      networking = {
-        firewall = {
-          allowedTCPPorts = map ({ port, ... }: port)
-            (filter ({ type, ... }: type == "TCP") cluster.endpoints.external);
-          allowedUDPPorts = map ({ port, ... }: port)
-            (filter ({ type, ... }: type == "UDP") cluster.endpoints.external);
-        };
+  mergeAll = f: foldl' (acc: cluster: acc // f cluster) { }
+    (attrValues gatewayedClusters);
 
-        nat.forwardPorts = map ({ type, port, ... }: {
-          destination = "${ingressPoint}:${toString port}";
-          proto = if type == "TCP" then "tcp" else "udp";
-          sourcePort = port;
-        }) streamEndpoints;
-      };
-    };
+  concatAll = f: concatLists (eachCluster f);
 
 in {
-  config = mkMerge (mapAttrsToList (_: gatewayConfig) gatewayedClusters);
+  # The attribute *shape* below must be knowable without reading `config`.
+  #
+  # The module system walks every module's `config` to collect option
+  # definitions before any option value exists, and `pushDownProperties` forces
+  # a `mkMerge`'s content list during that walk. An earlier revision built the
+  # merge list from `cfg.clusters`:
+  #
+  #     config = mkMerge (mapAttrsToList (_: gatewayConfig) gatewayedClusters);
+  #
+  # which made definition collection depend on the merged value of the very
+  # option being collected — an infinite recursion, and one that only this
+  # module hit, because the others are `mkIf isMember { ...static attrs... }`.
+  #
+  # `mkIf` is safe in the same position: its condition is re-wrapped rather
+  # than forced during the walk. So conditions and leaf option *values* may
+  # read `config` freely; attribute names may not.
+  config = {
+    services.nginx = mkIf isGateway {
+      enable = true;
+      recommendedProxySettings = true;
+      recommendedOptimisation = true;
+      recommendedGzipSettings = true;
+      recommendedTlsSettings = true;
+      virtualHosts = mergeAll virtualHostsFor;
+    };
+
+    networking = {
+      firewall = {
+        allowedTCPPorts = mkIf isGateway (concatAll (portsOfType "TCP"));
+        allowedUDPPorts = mkIf isGateway (concatAll (portsOfType "UDP"));
+      };
+
+      nat.forwardPorts = mkIf isGateway (concatAll forwardPortsFor);
+    };
+  };
 }

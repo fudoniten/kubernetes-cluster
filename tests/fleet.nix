@@ -78,6 +78,18 @@
           fqdn = "b2.beta.example.com";
         };
       };
+
+      # Same gateway host as alpha, on purpose: the gateway has to merge
+      # contributions from every cluster it fronts.
+      gateway = {
+        enable = true;
+        host = "gw";
+        zone = "beta.example.com";
+        internalDomain = "internal.example.com";
+        externalHostname = "gw.example.com";
+      };
+
+      endpoints.external = [{ name = "beta-api"; }];
     };
   };
 }
