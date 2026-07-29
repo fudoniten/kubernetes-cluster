@@ -10,23 +10,40 @@ with lib;
 let
   system = pkgs.stdenv.hostPlatform.system;
 
-  evalHost = hostName:
+  baseHost = hostName: {
+    networking = {
+      hostName = hostName;
+      # The gateway module sets nat.forwardPorts but deliberately does not
+      # enable NAT, matching the module this was extracted from — a gateway
+      # host is expected to have NAT on for its own reasons.
+      nat.enable = true;
+    };
+    system.stateVersion = "26.05";
+    fileSystems."/" = {
+      device = "/dev/sda1";
+      fsType = "ext4";
+    };
+    boot.loader.grub.devices = [ "/dev/sda" ];
+    # The gateway requests ACME certificates for its external endpoints.
+    security.acme = {
+      acceptTerms = true;
+      defaults.email = "test@example.com";
+    };
+  };
+
+  evalWith = modules:
     (import "${pkgs.path}/nixos/lib/eval-config.nix" {
       inherit system;
-      modules = [
-        module
-        ./fleet.nix
-        {
-          networking.hostName = hostName;
-          system.stateVersion = "26.05";
-          fileSystems."/" = {
-            device = "/dev/sda1";
-            fsType = "ext4";
-          };
-          boot.loader.grub.devices = [ "/dev/sda" ];
-        }
-      ];
+      inherit modules;
     }).config;
+
+  evalHost = hostName: evalWith [ module ./fleet.nix (baseHost hostName) ];
+
+  # What NixOS itself reports at build time. The option checks below never
+  # force `config.assertions`, so without this the module's own guardrails
+  # would be entirely untested.
+  failedAssertions = cfg:
+    map (entry: entry.message) (filter (entry: !entry.assertion) cfg.assertions);
 
   factsFor = hostName:
     let cfg = evalHost hostName;
@@ -173,8 +190,35 @@ let
     optional (!(elem "--node-taint=dedicated=gpu:NoSchedule" a1Flags))
     "dedicated=gpu:NoSchedule";
 
+  # A well-formed fleet must trip nothing — neither this module's assertions
+  # nor NixOS's.
+  unexpectedAssertions = concatLists (map (host:
+    map (msg: "${host}: unexpected assertion failure: ${msg}")
+    (failedAssertions (evalHost host))) [ "a0" "a1" "b0" "gw" "outsider" ]);
+
+  # The load-bearing safety property: services.k3s is a singleton, so a host
+  # claimed by two clusters has to fail at eval rather than at 3am.
+  doubleBooked = evalWith [
+    module
+    ./fleet.nix
+    (baseHost "a0")
+    {
+      services.kubernetes-cluster.clusters.beta.nodes.a0 = {
+        role = "agent";
+        address = "192.168.2.99";
+      };
+    }
+  ];
+
+  doubleBookedCaught = any (msg: hasInfix "claimed by multiple" msg)
+    (failedAssertions doubleBooked);
+
+  missingGuard = optional (!doubleBookedCaught)
+    "a host in two clusters did not trip the single-cluster assertion";
+
   failures = mismatches ++ (map (l: "a1 missing GPU label ${l}") gpuLabelMissing)
-    ++ (map (t: "a1 missing taint ${t}") a1TaintMissing);
+    ++ (map (t: "a1 missing taint ${t}") a1TaintMissing) ++ unexpectedAssertions
+    ++ missingGuard;
 
 in if failures == [ ] then
   pkgs.runCommand "kubernetes-cluster-eval-check" { } ''
