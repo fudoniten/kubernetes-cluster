@@ -81,6 +81,13 @@ options explicitly on any cluster that is already running.
 outside the cluster it fronts. A single host can gateway several clusters; each
 contributes its own virtual hosts and forwarded ports.
 
+The gateway sets `networking.nat.forwardPorts` for TCP/UDP endpoints but
+configures no NAT itself, since a gateway host has its own reasons to run it.
+**The host owes `networking.nat.enable` and `networking.nat.externalInterface`**
+— NixOS asserts on forwarded ports without an external interface. Likewise
+`security.acme.acceptTerms` and a default email, if any external endpoint uses
+the default `gateway.acme.enable = true`.
+
 **Membership.** `services.kubernetes-cluster.membership` is a read-only summary
 for consumers that need to derive their own configuration from the host's role:
 `cluster`, `node`, `isServer`, `isPrimary`, `isIngress`, `isGpu`. On a

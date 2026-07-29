@@ -13,10 +13,14 @@ let
   baseHost = hostName: {
     networking = {
       hostName = hostName;
-      # The gateway module sets nat.forwardPorts but deliberately does not
-      # enable NAT, matching the module this was extracted from — a gateway
-      # host is expected to have NAT on for its own reasons.
-      nat.enable = true;
+      # The gateway module sets nat.forwardPorts but deliberately configures no
+      # NAT itself, matching the module this was extracted from — a gateway
+      # host is expected to have NAT on for its own reasons. NixOS requires an
+      # external interface alongside forwarded ports, so the host owes both.
+      nat = {
+        enable = true;
+        externalInterface = "eth0";
+      };
     };
     system.stateVersion = "26.05";
     fileSystems."/" = {
@@ -157,12 +161,17 @@ let
     };
 
     # Named by no cluster and gatewaying none: gets nothing at all.
+    #
+    # `localhost` is nixpkgs' own default for services.nginx.virtualHosts, which
+    # stands precisely because this module contributed no definition to override
+    # it — the assertion is "none of gw's vhosts leaked here", and naming the
+    # default is a truer way to say that than filtering it out.
     outsider = {
       k3sEnabled = false;
       cluster = null;
       nginxEnabled = false;
       containerdEnabled = false;
-      vhosts = [ ];
+      vhosts = [ "localhost" ];
       forwardPorts = [ ];
     };
   };

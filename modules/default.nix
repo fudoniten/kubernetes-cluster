@@ -31,6 +31,11 @@ in {
   ];
 
   config = {
+    # Always an attrset, on members and non-members alike; a non-member is
+    # `cluster = null` with every boolean false. Do not "simplify" this to a
+    # nullable attrset — that needs `nullOr (attrsOf anything)`, whose deep
+    # merge over a value derived from the whole fleet is half of what 1c49db5
+    # fixed. Consumers test `membership.cluster != null`.
     services.kubernetes-cluster.membership = {
       cluster = clusterName;
       node = nodeName;

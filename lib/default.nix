@@ -16,7 +16,16 @@ rec {
   # The node which runs `--cluster-init`. Lexically first server rather than
   # `head` over a user-ordered list: attrsets have no meaningful order, and a
   # primary master that moves when an unrelated node is added would re-init the
-  # cluster.
+  # cluster. Note this is stable against adding *agents* only — promoting a
+  # node that sorts earlier does move it, which is why a running cluster should
+  # pin `primaryMaster` explicitly.
+  #
+  # This backs an option default, so it may read `cluster.nodes` and nothing
+  # else. Making it depend on another per-cluster option — `primaryMaster`
+  # itself, or anything whose own default reads config — closes the cycle that
+  # 1c49db5 fixed. When a value has to be derived from more of the cluster,
+  # resolve it in a `let` in the using module, the way `k3s.nix` resolves
+  # `joinAddress`.
   defaultPrimaryMaster = cluster:
     let servers = sort lessThan (attrNames (serversOf cluster));
     in if servers == [ ] then "" else head servers;
