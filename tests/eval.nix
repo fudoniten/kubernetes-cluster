@@ -178,7 +178,14 @@ let
 
   # Compare only the keys each expectation actually names, so a test can assert
   # one fact about a host without restating all of them.
-  mismatches = concatLists (mapAttrsToList (host: want:
+  #
+  # Three list levels deep — outer per-host, middle per-key, inner the 0-or-1
+  # from `optional` — so this needs `flatten`, which recurses through every
+  # level, not `concatLists`, which strips exactly one. A single-level strip
+  # here leaves a list of (mostly-empty) per-key lists rather than a list of
+  # mismatch records, so `failures == []` is never true even when nothing
+  # actually mismatches: every failing case looks the same as a passing one.
+  mismatches = flatten (mapAttrsToList (host: want:
     mapAttrsToList (key: wanted:
       let got = actual.${host}.${key};
       in optional (got != wanted) {
