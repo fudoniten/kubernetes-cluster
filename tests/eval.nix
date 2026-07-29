@@ -108,9 +108,10 @@ let
       containerdEnabled = false;
     };
 
+    # Joins via beta's explicit joinEndpoint, not b0's address.
     b1 = {
       role = "server";
-      serverAddr = "https://192.168.2.10:6443";
+      serverAddr = "https://kube.beta.example.com:6443";
       clusterInit = false;
       tokenFile = "/run/beta/token";
     };

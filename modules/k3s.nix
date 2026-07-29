@@ -9,6 +9,15 @@ let
   inherit (clusterLib.mkContext config)
     cluster node isMember isServer isPrimary isIngress isGpu primaryAddress;
 
+  # Resolved here rather than as an option default, so the option stays a plain
+  # `nullOr str` that cannot reach back into the cluster submodule's own config.
+  joinAddress = if !isMember then
+    null
+  else if cluster.joinEndpoint != null then
+    cluster.joinEndpoint
+  else
+    primaryAddress;
+
 in {
   config = mkIf isMember {
     networking = {
@@ -65,7 +74,7 @@ in {
       enable = true;
       role = if isServer then "server" else "agent";
       serverAddr = mkIf (!isPrimary)
-        "https://${primaryAddress}:${toString cluster.apiPort}";
+        "https://${joinAddress}:${toString cluster.apiPort}";
       clusterInit = isPrimary;
       tokenFile = cluster.tokenFile;
       gracefulNodeShutdown.enable = true;

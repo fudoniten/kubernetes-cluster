@@ -71,8 +71,11 @@ error, not a runtime surprise. Defining clusters a host is *not* part of is
 normal and expected — that is how a shared configuration describes a fleet.
 
 **Primary master.** The node that runs `--cluster-init`; every other node joins
-through its `address`. Defaults to the lexically first server rather than the
-first in some list, so that adding an unrelated node cannot silently move it.
+through its `address` unless `joinEndpoint` overrides that. It defaults to the
+lexically first server rather than the first in some list, so adding an *agent*
+cannot move it — but **promoting a node that sorts earlier will**, which puts
+`--cluster-init` on the new node and repoints everyone's join address. Pin both
+options explicitly on any cluster that is already running.
 
 **Gateway.** Not gated on cluster membership — the gateway is frequently a host
 outside the cluster it fronts. A single host can gateway several clusters; each
@@ -110,7 +113,8 @@ Everything hangs off `services.kubernetes-cluster.clusters.<name>`.
 | `nodes.<name>.labels` / `.taints` | `[ ]` | `--node-label` / `--node-taint` |
 | `nodes.<name>.ingress` | `false` | Adds the k3s service-LB label |
 | `nodes.<name>.gpu.enable` | `false` | NVIDIA containerd/CDI stack |
-| `primaryMaster` | first server | Runs `--cluster-init` |
+| `primaryMaster` | first server | Runs `--cluster-init`; pin it on a live cluster |
+| `joinEndpoint` | primary's address | Stable host through which nodes join |
 | `tokenFile` | — | Path to the join token; required |
 | `tokenReadyUnits` | `[ ]` | Units k3s must start after |
 | `stateDirectory` | — | See the caveat below |

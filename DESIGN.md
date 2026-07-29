@@ -278,38 +278,92 @@ Per §4.1 the *existing* cluster is the one bound for the DC, so the new cluster
 is the **home** cluster and it receives 8 of the 11 nodes. Everything here
 happens while all hosts are still on the home LAN.
 
-0. **Migrate the control plane first.** `thing-0/1/2` are the current servers and
-   all three are leaving the cluster. Promote `cellar`, `rama` and `thunk-0` to
-   `role = "server"`, let etcd converge, then retire the `thing-*` servers one at
-   a time keeping an odd member count. Do the same for the ceph mon label (§4.3).
-   Only once the DC-bound trio owns both quorums does node peeling begin.
+Per §4.1 the *existing* cluster is the one bound for the DC, so the new cluster
+is the **home** cluster and it receives 8 of the 11 nodes.
+
+#### 4a. Land the new hardware — this is the critical path
+
+The additional 1U host and its ~24 TiB (§4.2) must join `dc0` as an **agent**,
+take its OSDs, and finish backfilling before any `thing-*` host can leave:
+evacuating `thing-0/1/2` moves 52.75 TiB raw onto the DC-bound hosts, and it does
+not fit until that capacity exists. Backfilling tens of TiB takes days. Storage
+and control plane are independent, and storage is the slow one — start it first.
+
+#### 4b. Migrate the control plane, on the LAN
+
+`thing-0/1/2` are the current servers and all three are leaving. Grow to five,
+then shrink — never swap in place, and never sit at two members (which tolerates
+zero failures; four tolerates one, same as three, so passing through it briefly
+is fine).
+
+| Step | Servers | Count |
+|---|---|---|
+| now | thing-0/1/2 | 3 |
+| promote `rama` + the new 1U | thing-0/1/2, rama, new | 5 |
+| retire `thing-1`, `thing-2` | thing-0, rama, new | 3 |
+| promote `thunk-0`, retire `thing-0` | rama, thunk-0, new | 4 → 3 |
+
+`rama` is the natural first promotion: it is all-SSD, and etcd is fsync-bound.
+Leave `cellar` a pure storage agent — no reason to put etcd on five spindles.
+
+Two operational notes:
+
+- **`primaryMaster` and `joinEndpoint` must be pinned before any of this.** Both
+  are set on `dc0` as of this branch. `primaryMaster` otherwise defaults to the
+  lexically first server, so promoting a node sorting before `thing-0` would move
+  `--cluster-init` onto it; `joinEndpoint` otherwise follows the primary, so
+  retiring `thing-0` would strand any node rebuilt afterwards.
+- **Each promotion restarts every server.** Server FQDNs feed `--tls-san`, which
+  is computed across the whole server set, so adding one changes the k3s unit on
+  all of them. Deploy host by host, checking etcd health between, never a
+  fleet-wide push.
+
+Move the ceph mon label (§4.3) over the same window, one mon at a time.
+
+#### 4c. Peel nodes into the home cluster
+
 1. Add `clusters.<new>` with its own zone, gateway, token secret, and state
    directory — initially with no members.
-2. Pick the first node. Drain and remove it from the old cluster:
+2. Per node, drain and remove it from the old cluster:
    ```bash
    kubectl drain <node> --ignore-daemonsets --delete-emptydir-data
    kubectl delete node <node>
    ```
-3. Move the host between the two `nodes` attrsets in a single commit. Give it
-   `role = "server"`; it becomes the new cluster's `primaryMaster`
-   (`--cluster-init`).
+3. Move the host between the two `nodes` attrsets in a single commit.
 4. **Wipe k3s state on that host before rebuilding.** `/var/lib/rancher/k3s` and
    the configured `stateDirectory` cache the old server URL and token; a node
    that keeps them will happily rejoin the cluster you just removed it from.
-5. Repeat per node. Take `thing-0/1/2` early so the home cluster has 3 servers,
-   then `thing-3/4`, `toothless`, `system3`, `grendal`.
 
-Note that `thing-0/1/2` carry 52.75 TiB of OSDs. Those must be drained from ceph
-(`ceph osd out`, wait for rebalance) *before* the hosts leave the old cluster,
-and the DC-bound hosts have to have room for the data — see §4.2.
+Take the **OSD-free hosts first** — `thing-3`, `thing-4`, `toothless`, `system3`
+and `grendal` carry no OSDs, so they need only a drain and a rebuild:
+
+| Order | Host | Role in the home cluster | Why here |
+|---|---|---|---|
+| 1 | `thing-3` | server, `primaryMaster` | No OSDs, no GPU, smallest blast radius |
+| 2 | `thing-4` | server | No OSDs |
+| 3 | `toothless` | server | Quorum established; GPU |
+| 4 | `system3` | agent | GPU |
+| 5 | `grendal` | agent | GPU |
+| 6 | `thing-2` | agent | 20.01 TiB — evacuate from ceph first |
+| 7 | `thing-1` | agent | 16.37 HDD + 3.73 SSD |
+| 8 | `thing-0` | agent | Last; 16.37 TiB |
+
+`thing-3`/`thing-4` carry `ceph-mon=allowed`, so relocate any mon running there
+before they leave. For 6–8, `ceph osd out` and wait for the rebalance to complete
+*before* the host leaves the cluster.
 
 ### Phase 5 — migrate workloads, then move hardware
 
 1. **Storage first.** The home cluster needs a working storage class before
    anything stateful lands on it — a fresh Rook cluster on `thing-0/1/2`, subject
    to the SSD constraint in §4.2/§4.4.
-2. Per workload: repoint flux, migrate PVC data, cut DNS.
-3. **Physical relocation last**, once `cellar`/`rama`/`thunk-0` are the sole
+2. **Copy home's data while the DC hardware is still in Seattle.** `thing-0/1/2`
+   are wiped when they leave `dc0`'s ceph, so the home cluster starts empty and
+   its 10–20 TB has to be copied application-level out of `dc0`. On the LAN that
+   is an afternoon; after `cellar`/`rama`/`thunk-0` ship it is over the home
+   uplink. This ordering matters more than any other step in phase 5.
+3. Per workload: repoint flux, migrate PVC data, cut DNS.
+4. **Physical relocation last**, once `cellar`/`rama`/`thunk-0` are the sole
    members of the existing cluster and hold the whole ceph cluster. Everything
    before this point happens on the home LAN.
 

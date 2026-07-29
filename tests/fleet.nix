@@ -61,6 +61,11 @@
       tokenFile = "/run/beta/token";
       stateDirectory = "/var/lib/beta";
 
+      # Overrides the default of the primary master's address, so replacing b0
+      # does not strand a rebuilt node. Alpha deliberately leaves this unset so
+      # both paths are covered.
+      joinEndpoint = "kube.beta.example.com";
+
       nodes = {
         b0 = {
           role = "server";

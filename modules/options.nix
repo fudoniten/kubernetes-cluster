@@ -120,7 +120,29 @@ let
         defaultText = literalExpression "the lexically first server node";
         description = ''
           Node which initialises the cluster (`--cluster-init`). Other servers
-          and all agents join through it.
+          and all agents join through it, unless `joinEndpoint` says otherwise.
+
+          **Pin this explicitly on a running cluster.** The default is stable
+          against adding *agents*, but promoting a node whose name sorts
+          earlier moves it — which would put `--cluster-init` on the new node
+          and repoint every other node's join address.
+        '';
+      };
+
+      joinEndpoint = mkOption {
+        type = types.nullOr types.str;
+        default = null;
+        defaultText = literalExpression "the primary master's address";
+        example = "kube.example.com";
+        description = ''
+          Host or address through which nodes join, without scheme or port.
+          Defaults to the primary master's `address`.
+
+          Pin this to something stable — a VIP, or a name covering every server
+          — when the primary master may be replaced. A node that has already
+          joined caches cluster membership and is unaffected, but one rebuilt
+          or rebooted after the primary is gone needs an endpoint that still
+          resolves.
         '';
       };
 
