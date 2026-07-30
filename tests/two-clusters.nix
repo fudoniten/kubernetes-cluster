@@ -70,7 +70,7 @@ let
       path = [ pkgs.gzip ];
       preStart = ''
         mkdir -p /var/lib/rancher/k3s/agent/images/
-        ln -sf ${pkgs.k3s.airgapImages} \
+        ln -sf ${pkgs.k3s.airgap-images} \
           /var/lib/rancher/k3s/agent/images/airgap-images.tar.zst
       '';
     };
