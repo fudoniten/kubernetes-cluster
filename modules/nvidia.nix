@@ -15,7 +15,7 @@ with lib;
 
 let
   inherit (import ../lib { inherit lib; }) mkContext;
-  inherit (mkContext config) cluster nodeName isGpu;
+  inherit (mkContext config) cluster node nodeName isGpu;
 
   deviceLabelMappings = pkgs.writeText "gpu-device-label-mappings.json"
     (generators.toJSON { } cluster.nvidia.deviceLabels);
@@ -49,6 +49,9 @@ in {
       nvidia = {
         powerManagement.enable = false;
         open = false;
+        # Pinned per node: the driver is system-wide, and a card older than
+        # Turing needs the 580 branch that still supports it.
+        package = mkIf (node.gpu.driverPackage != null) node.gpu.driverPackage;
       };
     };
 

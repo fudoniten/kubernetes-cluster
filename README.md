@@ -119,6 +119,7 @@ Everything hangs off `services.kubernetes-cluster.clusters.<name>`.
 | `nodes.<name>.labels` / `.taints` | `[ ]` | `--node-label` / `--node-taint` |
 | `nodes.<name>.ingress` | `false` | Adds the k3s service-LB label |
 | `nodes.<name>.gpu.enable` | `false` | NVIDIA driver and CDI spec generation |
+| `nodes.<name>.gpu.driverPackage` | `null` | Pin the driver branch for this node |
 | `primaryMaster` | first server | Runs `--cluster-init`; pin it on a live cluster |
 | `joinEndpoint` | primary's address | Stable host through which nodes join |
 | `tokenFile` | — | Path to the join token; required |
@@ -150,6 +151,13 @@ Everything hangs off `services.kubernetes-cluster.clusters.<name>`.
 > image and its GC behaviour, and all three broke on a routine version bump, on
 > GPU nodes only. If you need to influence k3s's containerd config, use its
 > `config.toml.tmpl` hook rather than running a second daemon.
+>
+> `gpu.driverPackage` is per-node because the driver is system-wide and follows
+> the hardware. NVIDIA's 580 branch is the last supporting Maxwell, Pascal and
+> Volta, so a node with a P40, P4, Quadro P-series or V100 needs pinning to it.
+> Newer drivers do not fail loudly on such a card — they enumerate it, log that
+> they are ignoring it, and leave NVML reporting `Driver Not Loaded`, which
+> surfaces as CDI spec generation failing rather than as a driver error.
 
 ## Tests
 
