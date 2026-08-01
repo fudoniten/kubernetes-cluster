@@ -26,7 +26,6 @@ built for.
 services.kubernetes-cluster.clusters.home = {
   enable = true;
   tokenFile = "/run/k3s-secrets/token";
-  stateDirectory = "/state/services/kubernetes";
   tokenReadyUnits = [ "my-secrets.target" ];
 
   nodes = {
@@ -119,12 +118,11 @@ Everything hangs off `services.kubernetes-cluster.clusters.<name>`.
 | `nodes.<name>.fqdn` | `null` | Used for TLS SANs and the tagger's API endpoint |
 | `nodes.<name>.labels` / `.taints` | `[ ]` | `--node-label` / `--node-taint` |
 | `nodes.<name>.ingress` | `false` | Adds the k3s service-LB label |
-| `nodes.<name>.gpu.enable` | `false` | NVIDIA containerd/CDI stack |
+| `nodes.<name>.gpu.enable` | `false` | NVIDIA driver and CDI spec generation |
 | `primaryMaster` | first server | Runs `--cluster-init`; pin it on a live cluster |
 | `joinEndpoint` | primary's address | Stable host through which nodes join |
 | `tokenFile` | — | Path to the join token; required |
 | `tokenReadyUnits` | `[ ]` | Units k3s must start after |
-| `stateDirectory` | — | See the caveat below |
 | `apiPort` | `6443` | API server port |
 | `tlsSans` | `[ ]` | Extra SANs beyond the servers' own FQDNs |
 | `extraFlags` | `[ ]` | Extra k3s flags for all nodes |
@@ -141,11 +139,17 @@ Everything hangs off `services.kubernetes-cluster.clusters.<name>`.
 | `nvidia.baseLabels` | see source | Applied to every GPU node |
 | `nvidia.tagger.*` | — | Token, CA cert and refresh interval |
 
-> **`stateDirectory` caveat.** It currently only relocates containerd's root and
-> state directories on GPU nodes. k3s itself keeps its data in
-> `/var/lib/rancher/k3s`. This mirrors the behaviour of the module this was
-> extracted from; it is a wart, preserved deliberately so the extraction is a
-> no-op, and worth fixing separately.
+> **GPU nodes.** `gpu.enable` installs the driver and the NVIDIA container
+> toolkit, which generates CDI specs under `/var/run/cdi`. It deliberately does
+> **not** configure containerd: k3s manages its own, and containerd reads CDI
+> specs natively. Workloads get devices through the k8s device plugin running
+> with a CDI device-list strategy — no `RuntimeClass` and no runtime wrapper.
+>
+> An earlier revision ran a second containerd so the nvidia runtime could be
+> configured by hand. That meant owning containerd's config schema, its sandbox
+> image and its GC behaviour, and all three broke on a routine version bump, on
+> GPU nodes only. If you need to influence k3s's containerd config, use its
+> `config.toml.tmpl` hook rather than running a second daemon.
 
 ## Tests
 

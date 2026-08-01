@@ -8,7 +8,6 @@
     alpha = {
       enable = true;
       tokenFile = "/run/alpha/token";
-      stateDirectory = "/var/lib/alpha";
       tokenReadyUnits = [ "alpha-secrets.target" ];
 
       nodes = {
@@ -59,7 +58,6 @@
     beta = {
       enable = true;
       tokenFile = "/run/beta/token";
-      stateDirectory = "/var/lib/beta";
 
       # Overrides the default of the primary master's address, so replacing b0
       # does not strand a rebuilt node. Alpha deliberately leaves this unset so

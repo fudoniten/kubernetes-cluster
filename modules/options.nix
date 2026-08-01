@@ -171,15 +171,6 @@ let
         '';
       };
 
-      stateDirectory = mkOption {
-        type = types.str;
-        description = ''
-          Directory for cluster state. Note this currently only relocates
-          containerd's root and state directories on GPU nodes; k3s itself
-          keeps its data in `/var/lib/rancher/k3s`.
-        '';
-      };
-
       tlsSans = mkOption {
         type = types.listOf types.str;
         default = [ ];

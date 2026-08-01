@@ -24,7 +24,6 @@ let
       alpha = {
         enable = true;
         tokenFile = "/etc/k3s-token";
-        stateDirectory = "/var/lib/alpha";
         extraFlags = leanFlags;
         nodes = {
           a0 = {
@@ -43,7 +42,6 @@ let
       beta = {
         enable = true;
         tokenFile = "/etc/k3s-token";
-        stateDirectory = "/var/lib/beta";
         extraFlags = leanFlags;
         nodes.b0 = {
           role = "server";
