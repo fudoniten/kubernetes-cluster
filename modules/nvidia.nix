@@ -1,5 +1,14 @@
-# NVIDIA GPU support: containerd with the nvidia runtime, CDI device injection,
-# and a tagger that labels nodes by the devices they actually carry.
+# NVIDIA GPU support: driver, CDI spec generation, and a tagger that labels
+# nodes by the devices they actually carry.
+#
+# Device injection is CDI's job, and containerd does it natively. This module
+# deliberately does NOT configure containerd: k3s manages its own, which reads
+# CDI specs from /etc/cdi and /var/run/cdi. An earlier revision ran a separate
+# containerd so the nvidia runtime could be wired in by hand, which meant
+# owning containerd's config schema, its sandbox image and its GC behaviour —
+# all three of which broke on a routine version bump, on GPU nodes only.
+# Workloads request devices through the k8s device plugin; no RuntimeClass and
+# no runtime wrapper are involved.
 { config, lib, pkgs, ... }:
 
 with lib;
@@ -7,8 +16,6 @@ with lib;
 let
   inherit (import ../lib { inherit lib; }) mkContext;
   inherit (mkContext config) cluster nodeName isGpu;
-
-  containerdSocket = "/run/containerd/containerd.sock";
 
   deviceLabelMappings = pkgs.writeText "gpu-device-label-mappings.json"
     (generators.toJSON { } cluster.nvidia.deviceLabels);
@@ -25,126 +32,36 @@ let
 
 in {
   config = mkIf isGpu {
-    virtualisation.containerd = {
-      enable = true;
-      settings = {
-        version = 2;
-        root = "/var/lib/rancher/k3s/agent/containerd";
-        state = "/run/k3s/containerd";
-        grpc = { address = containerdSocket; };
-        plugins = {
-          "io.containerd.internal.v1.opt" = {
-            path = "/var/lib/rancher/k3s/agent/containerd";
-          };
-          "io.containerd.grpc.v1.cri" = {
-            stream_server_address = "127.0.0.1";
-            stream_server_port = "10010";
-            enable_cdi = true;
-            cdi_spec_dirs = [ "/var/run/cdi" ];
-            enable_selinux = false;
-            enable_unprivileged_ports = true;
-            enable_unprivileged_icmp = true;
-            device_ownership_from_security_context = false;
-            sandbox_image = "rancher/mirrored-pause:3.6";
-            registry.config_path = "/etc/containerd/certs.d";
-            cni = {
-              bin_dir = "/var/lib/rancher/k3s/data/current/bin";
-              conf_dir = "/var/lib/rancher/k3s/agent/etc/cni/net.d";
-            };
-            containerd = {
-              snapshotter = "overlayfs";
-              disable_snapshot_annotations = true;
-              runtimes = {
-                runc = {
-                  runtime_type = "io.containerd.runc.v2";
-                  options.SystemdCgroup = true;
-                  runtimes.runhcs-wcow-process.runtime_type =
-                    "io.containerd.runhcs.v1";
-                };
-                nvidia = {
-                  runtime_type = "io.containerd.runc.v2";
-                  privileged_without_host_devices = false;
-                  options = {
-                    Runtime = "nvidia";
-                    BinaryName =
-                      "${pkgs.nvidia-container-toolkit.tools}/bin/nvidia-container-runtime";
-                    SystemdCgroup = true;
-                    EnableCDI = true;
-                    CDISpecDirs = [ "/var/run/cdi" ];
-                  };
-                };
-              };
-            };
-          };
-        };
-      };
-    };
-
     hardware = {
       graphics = {
         enable = true;
         enable32Bit = true;
       };
+
+      # Generates the CDI specs that containerd injects from. This is the only
+      # piece that has to be present for GPU workloads to work.
       nvidia-container-toolkit = {
         enable = true;
         discovery-mode = "nvml";
         device-name-strategy = "uuid";
       };
+
       nvidia = {
         powerManagement.enable = false;
         open = false;
       };
     };
 
-    services = {
-      xserver.videoDrivers = [ "nvidia" ];
-
-      k3s.extraFlags = [ "--container-runtime-endpoint=${containerdSocket}" ];
-    };
+    services.xserver.videoDrivers = [ "nvidia" ];
 
     systemd = {
-      tmpfiles.settings."039-containerd" = {
-        "${cluster.stateDirectory}/containerd/root".d = {
-          mode = "0640";
-          user = "root";
-          group = "root";
-        };
-        "${cluster.stateDirectory}/containerd/state".d = {
-          mode = "0640";
-          user = "root";
-          group = "root";
-        };
-      };
-
       services = {
+        # Specs must exist before k3s starts accepting GPU containers. `wants`
+        # rather than `requires` so a node still comes up — without working
+        # GPUs — if spec generation fails, instead of losing the kubelet too.
         k3s = {
-          requires = [ "containerd.service" ];
-          after = [ "containerd.service" ];
-          wantedBy = [ "multi-user.target" ];
-        };
-
-        containerd = {
-          path = with pkgs; [
-            nvidia-container-toolkit
-            nvidia-container-toolkit.tools
-            cudaPackages.cudatoolkit
-            config.hardware.nvidia.package.out
-            libnvidia-container
-            runc
-          ];
-          environment = {
-            CONTAINERD_ROOT = "${cluster.stateDirectory}/containerd/root/";
-            CONTAINERD_STATE = "${cluster.stateDirectory}/containerd/state/";
-            LD_LIBRARY_PATH =
-              concatStringsSep ":" [ "${config.hardware.nvidia.package.out}/lib" ];
-          };
-          # Start after CDI specs are generated; nvidia-container-runtime 1.18+
-          # defaults to CDI mode, so containerd needs the specs before accepting
-          # GPU containers. Using `wants` (not `requires`) so containerd still
-          # starts even if CDI generation fails.
           after = [ "nvidia-container-toolkit-cdi-generator.service" ];
           wants = [ "nvidia-container-toolkit-cdi-generator.service" ];
-          wantedBy = [ "k3s.service" "multi-user.target" ];
         };
 
         nvidia-container-toolkit-cdi-generator = {
@@ -185,43 +102,14 @@ in {
       };
     };
 
-    # nvidia-container-runtime needs an explicit config.toml with absolute Nix
-    # store paths for runc and the hook, since containerd does not have the Nix
-    # store in its PATH. Mode is "cdi" to use the specs generated by
-    # nvidia-container-toolkit-cdi-generator.service rather than the legacy
-    # NVML-hook path, which crashes on kernel 6.12.90+.
-    environment.etc."nvidia-container-runtime/config.toml".text = ''
-      disable-require = false
-
-      [nvidia-container-cli]
-        path = "${pkgs.libnvidia-container}/bin/nvidia-container-cli"
-        ldconfig = "@${pkgs.glibc.bin}/bin/ldconfig"
-        load-kmods = true
-        no-cgroups = false
-
-      [nvidia-container-runtime]
-        debug = "/dev/null"
-        log-level = "info"
-        mode = "cdi"
-        runtimes = ["${pkgs.runc}/bin/runc"]
-
-      [nvidia-container-runtime.modes.cdi]
-        default-kind = "nvidia.com/gpu"
-        annotation-prefixes = ["cdi.k8s.io/"]
-        spec-dirs = ["/var/run/cdi", "/etc/cdi"]
-
-      [nvidia-container-runtime-hook]
-        path = "${pkgs.nvidia-container-toolkit.tools}/bin/nvidia-container-runtime-hook"
-        skip-error = false
-    '';
-
+    # `nvidia-ctk` is worth having on the node to inspect and regenerate specs.
+    # cudatoolkit and runc used to be here only to populate the hand-rolled
+    # containerd's PATH; k3s brings its own runc, and cudatoolkit is several GB
+    # of closure that nothing on the host consumes.
     environment.systemPackages = with pkgs; [
       nvidia-container-toolkit
       nvidia-container-toolkit.tools
-      cudaPackages.cudatoolkit
-      config.hardware.nvidia.package.out
       libnvidia-container
-      runc
     ];
   };
 }
