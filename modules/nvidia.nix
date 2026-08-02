@@ -38,8 +38,9 @@ in {
         enable32Bit = true;
       };
 
-      # Generates the CDI specs that containerd injects from. This is the only
-      # piece that has to be present for GPU workloads to work.
+      # Generates the host CDI spec (vendor nvidia.com). Workloads no longer
+      # inject from this one — see the driver-root note below — but the device
+      # plugin's own pod does, which is how it gets an NVML to enumerate with.
       nvidia-container-toolkit = {
         enable = true;
         discovery-mode = "nvml";
@@ -56,6 +57,43 @@ in {
     };
 
     services.xserver.videoDrivers = [ "nvidia" ];
+
+    # An FHS-shaped view of the driver, for the k8s device plugin alone.
+    #
+    # Under DEVICE_LIST_STRATEGY=cdi-cri the plugin does not inject from the
+    # host spec generated above: it builds its own, vendored under
+    # k8s.device-plugin.nvidia.com, from inside its container and hands those
+    # device names to the kubelet over CRI. The nvidia-container-toolkit it
+    # vendors is stock upstream, which locates driver libraries only under
+    # /usr/lib64, /usr/lib/<triple>, /lib64 and /lib/<triple> beneath its
+    # driver root, plus an ldcache we don't have. nixpkgs' dlopen discoverer —
+    # the patch that lets nvidia-ctk work on NixOS at all — is not in that
+    # image, and the plugin exposes no equivalent of --library-search-path.
+    # Failing the lookup is fatal: it cannot generate a spec, so it exits.
+    #
+    # Bind mounts rather than symlinks, because the lookup resolves symlinks in
+    # the *container's* mount namespace, where neither /run/opengl-driver nor
+    # /nix/store exists. The driver's own directories are internally
+    # consistent, so binding each one is both FHS-shaped and resolvable.
+    #
+    # Nothing outside the plugin's container consumes this: the plugin mounts
+    # it at /driver-root and is told the host path via NVIDIA_DRIVER_ROOT.
+    fileSystems = let
+      nvidia = config.hardware.nvidia.package;
+      bindRo = device: {
+        inherit device;
+        fsType = "none";
+        options = [ "bind" "ro" ];
+      };
+    in {
+      # Load-bearing: driver version inference, and every library mount in the
+      # generated spec, hang off this one.
+      "/run/nvidia-driver-root/usr/lib64" = bindRo "${getLib nvidia}/lib";
+      # Optional — its discoverer is non-fatal — but it puts nvidia-smi and
+      # friends into workload containers. GSP firmware is deliberately left
+      # out: the host kernel module loads it, containers never read it.
+      "/run/nvidia-driver-root/usr/bin" = bindRo "${getBin nvidia}/bin";
+    };
 
     systemd = {
       services = {
