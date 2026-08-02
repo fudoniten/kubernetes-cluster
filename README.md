@@ -146,6 +146,17 @@ Everything hangs off `services.kubernetes-cluster.clusters.<name>`.
 > specs natively. Workloads get devices through the k8s device plugin running
 > with a CDI device-list strategy — no `RuntimeClass` and no runtime wrapper.
 >
+> With `DEVICE_LIST_STRATEGY=cdi-cri` the plugin does not inject from that host
+> spec — it generates its own from inside its container. The toolkit it vendors
+> is stock upstream, so it looks for driver libraries only under FHS paths and
+> lacks nixpkgs' dlopen discoverer. `gpu.enable` therefore also assembles a
+> minimal FHS-shaped driver root at `/run/nvidia-driver-root`, which the plugin
+> must mount at `/driver-root` while being pointed back at the host path with
+> `NVIDIA_DRIVER_ROOT`. Set `NVIDIA_DEV_ROOT=/` alongside it: it defaults to
+> `NVIDIA_DRIVER_ROOT`, which would otherwise rewrite every device node path.
+> This is a contract with the plugin's internals rather than a documented
+> interface — re-check it when bumping the image.
+>
 > An earlier revision ran a second containerd so the nvidia runtime could be
 > configured by hand. That meant owning containerd's config schema, its sandbox
 > image and its GC behaviour, and all three broke on a routine version bump, on
