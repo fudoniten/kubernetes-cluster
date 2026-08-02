@@ -85,8 +85,34 @@ let
         type = types.bool;
         default = false;
         description = ''
-          Enable the NVIDIA containerd/CDI stack on this node. See the
-          cluster-level `nvidia` options for the shared configuration.
+          Install the NVIDIA driver and generate CDI specs on this node. See
+          the cluster-level `nvidia` options for the shared configuration.
+        '';
+      };
+
+      gpu.driverPackage = mkOption {
+        type = types.nullOr types.package;
+        default = null;
+        defaultText = literalExpression
+          "boot.kernelPackages.nvidiaPackages.stable (the NixOS default)";
+        example = literalExpression
+          "config.boot.kernelPackages.nvidiaPackages.legacy_580";
+        description = ''
+          NVIDIA driver for this node. Null leaves the NixOS default in place.
+
+          Per-node rather than per-cluster because the driver is system-wide
+          and is a property of the hardware in the box, not of the cluster.
+          NVIDIA's 580 branch is the last to support Maxwell, Pascal and
+          Volta, so a node carrying a P40, P4, Quadro P-series or V100 has to
+          be pinned to it while a Turing-or-newer node does not. Newer drivers
+          do not fail loudly on such a card — they enumerate it, log that they
+          are ignoring it, and leave NVML reporting "Driver Not Loaded".
+
+          A host holding cards from both eras cannot satisfy both, and has to
+          take the older branch.
+
+          Write this as `config.boot.kernelPackages.nvidiaPackages.<branch>`
+          so it resolves against the kernel of the host that uses it.
         '';
       };
 
