@@ -46,11 +46,20 @@
       (str/replace " " "-")
       (keyword)))
 
-(defn get-gpus []
-  (->> (shell {:out :string}
-              (str/join " " ["nvidia-smi"
-                             "--query-gpu=gpu_uuid,name,memory.total"
-                             "--format=csv,noheader"]))
+(defn get-gpus
+  "Query the local GPUs. Returns a (possibly empty) seq, or nil if nvidia-smi
+   failed -- e.g. driver not loaded, or a card fell off the bus. Callers treat
+   nil like \"no GPUs\": a node whose GPUs cannot be queried should not keep
+   advertising them."
+  []
+  (some->> (try
+             (shell {:out :string :err :string}
+                    (str/join " " ["nvidia-smi"
+                                   "--query-gpu=gpu_uuid,name,memory.total"
+                                   "--format=csv,noheader"]))
+             (catch Exception e
+               (println "nvidia-smi failed:" (.getMessage e))
+               nil))
        :out
        str/split-lines
        (map str/trim)
@@ -75,6 +84,17 @@
     ;; babashka.http-client honours the per-request :ssl-context option.
     (SSLContext/setDefault ctx)
     ctx))
+
+(defn get-node-labels
+  "Current labels on the node, as a map of string keys to values."
+  [kube-master port token hostname ca-cert-file verbose]
+  (let [url  (format "https://%s:%d/api/v1/nodes/%s" kube-master port hostname)
+        _    (log verbose "GET" url)
+        resp (http/get url
+                       {:headers     {"Authorization" (str "Bearer " token)
+                                      "Accept"        "application/json"}
+                        :ssl-context (make-ssl-context ca-cert-file)})]
+    (-> resp :body (json/parse-string) (get-in ["metadata" "labels"]) (or {}))))
 
 (defn patch-node! [kube-master port token hostname ca-cert-file patch verbose]
   (let [url  (format "https://%s:%d/api/v1/nodes/%s" kube-master port hostname)
@@ -109,29 +129,49 @@
           (not (fs/exists? cert))       (usage (format "CA cert file not found: %s" cert))
           :else options)))))
 
+(def gpu-label-prefix "fudo.org/gpu.")
+
+(defn label-patch
+  "Strategic-merge label map: set every desired label to \"true\" and null out
+   (i.e. delete) any existing fudo.org/gpu.* label that is no longer desired,
+   so node labels never drift from the device annotation when cards change."
+  [existing-labels desired-labels]
+  (let [desired (set desired-labels)
+        stale   (->> (keys existing-labels)
+                     (filter #(str/starts-with? % gpu-label-prefix))
+                     (remove desired))]
+    (merge (zipmap stale (repeat nil))
+           (zipmap desired (repeat "true")))))
+
 (defn process-gpus-and-apply-labels [hostname device-map token-file kube-master port ca-cert-file verbose]
   (log verbose "Starting GPU processing and label application.")
-  (let [gpus (get-gpus)]
-    (log verbose "GPUs found:" gpus)
-    (if (empty? gpus)
-      (println "No GPUs found.")
-      (let [token          (str/trim (slurp token-file))
-            labels         (load-device-labels device-map)
-            gpu-labels     (into {} (map (fn [{:keys [uuid name]}]
-                                           [uuid (get labels name)])
-                                         gpus))
-            node-labels    (distinct (concat ["fudo.org/gpu.assign"]
-                                             (apply concat (vals gpu-labels))))
-            encoder        (Base64/getEncoder)
-            encoded-map    (-> gpu-labels
-                               json/generate-string
-                               (.getBytes "UTF-8")
-                               (->> (.encodeToString encoder)))
-            patch          {:metadata
-                            {:labels      (into {} (map (fn [l] [(name l) "true"]) node-labels))
-                             :annotations {"fudo.org/gpu.device.labels" encoded-map}}}]
-        (log verbose "Applying labels:" node-labels)
-        (patch-node! kube-master port token hostname ca-cert-file patch verbose)))))
+  (let [gpus           (get-gpus)
+        _              (log verbose "GPUs found:" gpus)
+        _              (when (empty? gpus)
+                         (println "No usable GPUs found; clearing GPU labels and device annotation."))
+        token          (str/trim (slurp token-file))
+        labels         (load-device-labels device-map)
+        gpu-labels     (into {} (map (fn [{:keys [uuid name]}]
+                                       (when-not (contains? labels name)
+                                         (println (format "warning: no label mapping for GPU model %s (%s)"
+                                                          (clojure.core/name name) uuid)))
+                                       [uuid (get labels name [])])
+                                     gpus))
+        node-labels    (if (seq gpus)
+                         (distinct (map name (concat ["fudo.org/gpu.assign"]
+                                                     (apply concat (vals gpu-labels)))))
+                         [])
+        existing       (get-node-labels kube-master port token hostname ca-cert-file verbose)
+        encoder        (Base64/getEncoder)
+        encoded-map    (-> gpu-labels
+                           json/generate-string
+                           (.getBytes "UTF-8")
+                           (->> (.encodeToString encoder)))
+        patch          {:metadata
+                        {:labels      (label-patch existing node-labels)
+                         :annotations {"fudo.org/gpu.device.labels" encoded-map}}}]
+    (log verbose "Applying labels:" node-labels)
+    (patch-node! kube-master port token hostname ca-cert-file patch verbose)))
 
 (defn -main [& args]
   (let [{:keys [hostname device-map token kube-master port cert verbose]} (parse-arguments args)]
