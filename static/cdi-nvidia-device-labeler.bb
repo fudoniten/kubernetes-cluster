@@ -46,27 +46,41 @@
       (str/replace " " "-")
       (keyword)))
 
-(defn get-gpus
-  "Query the local GPUs. Returns a (possibly empty) seq, or nil if nvidia-smi
-   failed -- e.g. driver not loaded, or a card fell off the bus. Callers treat
-   nil like \"no GPUs\": a node whose GPUs cannot be queried should not keep
-   advertising them."
-  []
-  (some->> (try
-             (shell {:out :string :err :string}
-                    (str/join " " ["nvidia-smi"
-                                   "--query-gpu=gpu_uuid,name,memory.total"
-                                   "--format=csv,noheader"]))
-             (catch Exception e
-               (println "nvidia-smi failed:" (.getMessage e))
-               nil))
-       :out
-       str/split-lines
+(def gpu-row-pattern
+  "A data row of the CSV query: a GPU UUID first. nvidia-smi interleaves error
+   lines (\"Unable to determine the device handle for GPU ...\") with the rows
+   for cards it could read, so anything else on stdout is not a card."
+  #"^GPU-[0-9a-fA-F-]+\s*,.*")
+
+(defn parse-gpu-rows [out]
+  (->> (str/split-lines (or out ""))
        (map str/trim)
-       (remove str/blank?)
-       (map #(str/split % #","))
+       (filter #(re-matches gpu-row-pattern %))
+       (map #(mapv str/trim (str/split % #",")))
        (process-rows [:uuid :name :memory])
        (map #(update % :name to-kebab-kw))))
+
+(defn get-gpus
+  "Query the local GPUs. Returns {:ok? bool :gpus [...]}.
+
+   `:ok?` is false when nvidia-smi exited non-zero or could not be run. It
+   can still have listed some cards: one card in a bad state fails the whole
+   query, but the rows for the healthy ones are printed all the same, and
+   those are kept rather than thrown away with the bad one."
+  []
+  (let [{:keys [exit out err]}
+        (try
+          (shell {:out :string :err :string :continue true}
+                 (str/join " " ["nvidia-smi"
+                                "--query-gpu=gpu_uuid,name,memory.total"
+                                "--format=csv,noheader"]))
+          (catch Exception e
+            {:exit -1 :out "" :err (.getMessage e)}))
+        gpus (parse-gpu-rows out)]
+    (when-not (zero? exit)
+      (println (format "nvidia-smi exited %d: %s" exit
+                       (str/trim (str/join " " (remove str/blank? [err out]))))))
+    {:ok? (zero? exit) :gpus gpus}))
 
 (defn make-ssl-context [ca-cert-file]
   (let [cf    (CertificateFactory/getInstance "X.509")
@@ -145,10 +159,21 @@
 
 (defn process-gpus-and-apply-labels [hostname device-map token-file kube-master port ca-cert-file verbose]
   (log verbose "Starting GPU processing and label application.")
-  (let [gpus           (get-gpus)
+  (let [{:keys [ok? gpus]} (get-gpus)
         _              (log verbose "GPUs found:" gpus)
+        ;; Only a query that *succeeded* and listed nothing means the node has
+        ;; no GPUs. A failed query with nothing readable says nothing about
+        ;; the cards -- it is as often a driver not loaded yet at boot as a
+        ;; card gone -- so leave the node as it is and fail the unit, where
+        ;; it is visible, rather than wiping it out of the device assigner.
+        _              (when (and (not ok?) (empty? gpus))
+                         (println "Could not read any GPU; leaving node labels and device annotation unchanged.")
+                         (System/exit 1))
         _              (when (empty? gpus)
-                         (println "No usable GPUs found; clearing GPU labels and device annotation."))
+                         (println "nvidia-smi reports no GPUs; clearing GPU labels and device annotation."))
+        _              (when (and (not ok?) (seq gpus))
+                         (println (format "Labelling the %d GPU(s) nvidia-smi could read; the rest are left off."
+                                          (count gpus))))
         token          (str/trim (slurp token-file))
         labels         (load-device-labels device-map)
         gpu-labels     (into {} (map (fn [{:keys [uuid name]}]
