@@ -20,6 +20,11 @@ let
 
 in {
   config = mkIf isMember {
+    assertions = [{
+      assertion = cluster.imageGc.lowThreshold < cluster.imageGc.highThreshold;
+      message = "kubernetes-cluster: imageGc.lowThreshold must be below imageGc.highThreshold.";
+    }];
+
     networking = {
       useHostResolvConf = true;
       # Cluster networking (CNI, service proxying, node-to-node) assumes an
@@ -95,8 +100,14 @@ in {
           ++ (optional isIngress "svccontroller.k3s.cattle.io/enablelb=true");
         labelFlags = map (label: "--node-label=${label}") labels;
         taintFlags = map (taint: "--node-taint=${taint}") node.taints;
+        # Before the user-supplied flags, so an explicit `--kubelet-arg` there
+        # still wins.
+        imageGcFlags = [
+          "--kubelet-arg=image-gc-high-threshold=${toString cluster.imageGc.highThreshold}"
+          "--kubelet-arg=image-gc-low-threshold=${toString cluster.imageGc.lowThreshold}"
+        ];
 
-      in sanFlags ++ labelFlags ++ taintFlags ++ cluster.extraFlags
+      in sanFlags ++ labelFlags ++ taintFlags ++ imageGcFlags ++ cluster.extraFlags
       ++ node.extraFlags;
     };
   };

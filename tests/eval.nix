@@ -84,6 +84,8 @@ let
         "--tls-san=a0.alpha.example.com"
         "--node-label=tier=control"
         "--node-label=svccontroller.k3s.cattle.io/enablelb=true"
+        "--kubelet-arg=image-gc-high-threshold=60"
+        "--kubelet-arg=image-gc-low-threshold=50"
       ];
       cluster = "alpha";
       isServer = true;
