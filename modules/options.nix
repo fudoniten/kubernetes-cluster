@@ -212,6 +212,33 @@ let
         description = "Additional k3s flags applied to every node.";
       };
 
+      imageGc = {
+        highThreshold = mkOption {
+          type = types.ints.between 1 100;
+          default = 60;
+          description = ''
+            Disk usage percentage of the image filesystem at which the kubelet
+            starts deleting unused images (kubelet default: 85).
+
+            The upstream default sits well above Ceph's MON_DISK_LOW warning,
+            which fires once a mon's host filesystem drops below 30% free (70%
+            used). Nodes keeping k3s state on the same disk as mon data would
+            otherwise pile up hundreds of GB of unreferenced image layers and
+            trip that warning long before the kubelet started cleaning up.
+          '';
+        };
+
+        lowThreshold = mkOption {
+          type = types.ints.between 0 100;
+          default = 50;
+          description = ''
+            Disk usage percentage the kubelet frees down to once image garbage
+            collection has started (kubelet default: 80). Must be below
+            `highThreshold`.
+          '';
+        };
+      };
+
       nodePackages = mkOption {
         type = types.listOf types.package;
         default = [ ];
