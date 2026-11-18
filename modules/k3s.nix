@@ -99,5 +99,33 @@ in {
       in sanFlags ++ labelFlags ++ taintFlags ++ cluster.extraFlags
       ++ node.extraFlags;
     };
+
+    # Weekly prune of containerd images no container references. Every
+    # re-pull of an updated tag leaves the previous tag's layers behind, and
+    # on nodes whose k3s state lives on the data disk those layers
+    # accumulate until the disk trips Ceph's MON_DISK_LOW (observed: 479G
+    # of orphaned snapshot layers on one node). `rmi --prune` only touches
+    # unreferenced images, so this is safe while workloads run.
+    systemd.services.containerd-image-prune = {
+      description = "Prune containerd images not referenced by any container";
+      # `k3s crictl` rather than a standalone crictl package: the k3s
+      # wrapper pins the CRI socket the kubelet actually uses.
+      serviceConfig = {
+        Type = "oneshot";
+        ExecStart =
+          "${config.services.k3s.package}/bin/k3s crictl rmi --prune";
+      };
+    };
+
+    systemd.timers.containerd-image-prune = {
+      wantedBy = [ "timers.target" ];
+      timerConfig = {
+        # Middle of the night, and staggered so the fleet's nodes don't all
+        # prune at the same instant.
+        OnCalendar = "Sun *-*-* 03:30:00";
+        RandomizedDelaySec = "30min";
+        Persistent = true;
+      };
+    };
   };
 }
