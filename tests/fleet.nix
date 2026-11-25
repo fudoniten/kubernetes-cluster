@@ -27,7 +27,12 @@
         };
       };
 
-      storage.ceph.enable = true;
+      storage.ceph = {
+        enable = true;
+        # a1 is an agent and gets no token here, so it exercises the
+        # unguarded-agent warning; eval.nix gives it one separately.
+        rebootGuard.enable = true;
+      };
 
       nvidia = {
         deviceLabels."tesla-t4" = [ "example.com/gpu.model-tesla-t4" ];

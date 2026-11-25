@@ -69,6 +69,7 @@ let
       forwardPorts = map (rule: { inherit (rule) destination proto sourcePort; })
         cfg.networking.nat.forwardPorts;
       openTcpPorts = sort lessThan cfg.networking.firewall.allowedTCPPorts;
+      rebootGuard = cfg.systemd.services ? ceph-reboot-guard-recover;
     };
 
   actual = genAttrs [ "a0" "a1" "b0" "b1" "gw" "outsider" ] factsFor;
@@ -93,6 +94,8 @@ let
       nginxEnabled = false;
       cephModules = [ "rbd" "ceph" ];
       containerdEnabled = false;
+      # A server: guarded through the k3s admin kubeconfig.
+      rebootGuard = true;
     };
 
     a1 = {
@@ -110,6 +113,8 @@ let
       nginxEnabled = false;
       cephModules = [ "rbd" "ceph" ];
       containerdEnabled = true;
+      # An agent without a token has no way to reach the toolbox.
+      rebootGuard = false;
     };
 
     b0 = {
@@ -127,6 +132,8 @@ let
       isGpu = false;
       cephModules = [ ];
       containerdEnabled = false;
+      # beta has no Ceph at all.
+      rebootGuard = false;
     };
 
     # Joins via beta's explicit joinEndpoint, not b0's address.
@@ -232,12 +239,36 @@ let
   missingGuard = optional (!doubleBookedCaught)
     "a host in two clusters did not trip the single-cluster assertion";
 
-  failures = mismatches ++ (map (l: "a1 missing GPU label ${l}") gpuLabelMissing)
+  # The reboot guard on an agent: unguarded and warned about without a token,
+  # guarded with one.
+  a1Unguarded = any (w: hasInfix "NOT guarded" w) (evalHost "a1").warnings;
+
+  a1WithToken = evalWith [
+    module
+    ./fleet.nix
+    (baseHost "a1")
+    {
+      services.kubernetes-cluster.clusters.alpha.storage.ceph.rebootGuard.tokenFile =
+        "/run/alpha/reboot-guard-token";
+    }
+  ];
+
+  guardFailures = optional (!a1Unguarded)
+    "a1 has no reboot guard token but no warning says so"
+    ++ optional (!(a1WithToken.systemd.services ? ceph-reboot-guard-recover))
+    "a1 with a reboot guard token is still unguarded";
+
+  # Forcing this builds the guard script, so writeShellApplication's
+  # shellcheck pass runs as part of the check.
+  guardScript = (evalHost "a0").systemd.services.ceph-reboot-guard-recover.serviceConfig.ExecStart;
+
+  failures = mismatches ++ guardFailures ++ (map (l: "a1 missing GPU label ${l}") gpuLabelMissing)
     ++ (map (t: "a1 missing taint ${t}") a1TaintMissing) ++ unexpectedAssertions
     ++ missingGuard;
 
 in if failures == [ ] then
   pkgs.runCommand "kubernetes-cluster-eval-check" { } ''
+    # ${guardScript}
     echo "all fleet expectations hold" > $out
   ''
 else

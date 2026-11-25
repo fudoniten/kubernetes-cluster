@@ -334,6 +334,81 @@ let
         '';
       };
 
+      storage.ceph.rebootGuard = {
+        enable = mkOption {
+          type = types.bool;
+          default = false;
+          description = ''
+            Pin a Rook Ceph cluster's data in place while a node reboots.
+
+            `reboot`, `poweroff` and `halt` are wrapped to set the `noout`
+            and `norebalance` OSD flags first (refusing if `ceph osd
+            ok-to-stop` says this node's OSDs cannot safely go down), and a
+            shutdown hook sets them for any path that skips the wrapper, such
+            as `systemctl reboot`. After boot, a service waits for the node's
+            OSDs to rejoin and the PGs to settle, then unsets the flags --
+            unless another node is still mid-reboot, in which case that node
+            unsets them when it is back.
+
+            Ceph is reached through the Rook toolbox with `kubectl exec`, so
+            the node needs Kubernetes credentials: servers use the k3s admin
+            kubeconfig, and agents need `tokenFile`. An agent without one is
+            left unguarded, with an evaluation warning.
+          '';
+        };
+
+        namespace = mkOption {
+          type = types.str;
+          default = "rook-ceph";
+          description = "Namespace of the Rook toolbox deployment.";
+        };
+
+        toolsDeployment = mkOption {
+          type = types.str;
+          default = "rook-ceph-tools";
+          description = "Name of the Rook toolbox deployment.";
+        };
+
+        tokenFile = mkOption {
+          type = types.nullOr types.str;
+          default = null;
+          description = ''
+            Path on the node to a Kubernetes bearer token allowed to
+            `kubectl exec` into the toolbox deployment. Required on agents,
+            which have no admin kubeconfig. Servers prefer the admin
+            kubeconfig and use this only if it is missing.
+          '';
+        };
+
+        caCertFile = mkOption {
+          type = types.str;
+          default = "/var/lib/rancher/k3s/agent/server-ca.crt";
+          description = ''
+            CA certificate verifying the API server, for `tokenFile`.
+          '';
+        };
+
+        apiServer = mkOption {
+          type = types.str;
+          default = "https://127.0.0.1:6444";
+          description = ''
+            API server URL used with `tokenFile`. The default is the k3s
+            agent's local load balancer, which every node runs and which
+            follows the servers, so the guard keeps working while any one
+            server is down.
+          '';
+        };
+
+        recoveryTimeout = mkOption {
+          type = types.int;
+          default = 4 * 60 * 60;
+          description = ''
+            Seconds the post-boot service waits for OSDs and PGs before giving
+            up and leaving the flags set (the unit then shows as failed).
+          '';
+        };
+      };
+
       nvidia = {
         deviceLabels = mkOption {
           type = types.attrsOf (types.listOf types.str);

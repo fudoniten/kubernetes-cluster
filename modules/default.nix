@@ -28,6 +28,7 @@ in {
     ./gateway.nix
     ./nvidia.nix
     ./storage.nix
+    ./ceph-reboot-guard.nix
   ];
 
   config = {
