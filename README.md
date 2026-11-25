@@ -136,9 +136,30 @@ Everything hangs off `services.kubernetes-cluster.clusters.<name>`.
 | `gateway.*` | — | See above |
 | `endpoints.internal` / `.external` | `[ ]` | `{ name; type; port; }` |
 | `storage.ceph.enable` | `false` | RBD modules and the `mount.ceph` helper |
+| `storage.ceph.rebootGuard.*` | disabled | Pin Rook Ceph data across reboots (below) |
 | `nvidia.deviceLabels` | `{ }` | Device model → labels |
 | `nvidia.baseLabels` | see source | Applied to every GPU node |
 | `nvidia.tagger.*` | — | Token, CA cert and refresh interval |
+
+> **Ceph-safe reboots.** With `storage.ceph.rebootGuard.enable`, `reboot`,
+> `poweroff` and `halt` on a node first run `ceph osd ok-to-stop` on its OSDs
+> (refusing if they cannot safely go down), then set `noout` and
+> `norebalance` and leave a marker for the node under `ceph config-key`. A
+> shutdown hook does the same, best effort, for paths that skip the wrapper
+> (`systemctl reboot`, `shutdown -r`). After boot,
+> `ceph-reboot-guard-recover.service` waits for the node's OSDs and for every
+> PG to be active with nothing degraded, then unsets the flags -- unless
+> another node still has a marker, in which case that node does it when it is
+> back. It does not wait for `active+clean`, because `norebalance` itself
+> holds misplaced PGs back. Pass `--ceph-skip` to reboot without touching Ceph,
+> or `--ceph-force` to skip the ok-to-stop check; `ceph-reboot-guard status`
+> and `ceph-reboot-guard release` inspect and clear stale state.
+>
+> Ceph is reached with `kubectl exec` into the Rook toolbox. Servers use the
+> k3s admin kubeconfig; agents need `rebootGuard.tokenFile`, a token allowed
+> `get` on the toolbox deployment, `list`/`get` on pods and `create` on
+> `pods/exec` in its namespace. It is used against the agent's local API load
+> balancer (`127.0.0.1:6444`), so any one server can be down.
 
 > **GPU nodes.** `gpu.enable` installs the driver and the NVIDIA container
 > toolkit, which generates CDI specs under `/var/run/cdi`. It deliberately does
