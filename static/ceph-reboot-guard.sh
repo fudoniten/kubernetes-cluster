@@ -27,10 +27,14 @@ die() {
 cleanup() { if [[ -n $tmpdir ]]; then rm -rf "$tmpdir"; fi; }
 trap cleanup EXIT
 
-# Pick credentials for kubectl. A token file, where one is configured, wins:
-# agents have no admin kubeconfig, and on a server the token is no worse.
+# Pick credentials for kubectl. The k3s admin kubeconfig, where there is one
+# (servers), wins: it needs nothing from the cluster's RBAC, so a token that
+# has not been granted yet cannot break a server's guard. Agents have no admin
+# kubeconfig and use the token.
 setup_kube() {
-  if [[ -n $GUARD_TOKEN_FILE ]]; then
+  if [[ -r $GUARD_ADMIN_KUBECONFIG ]]; then
+    export KUBECONFIG="$GUARD_ADMIN_KUBECONFIG"
+  elif [[ -n $GUARD_TOKEN_FILE ]]; then
     [[ -r $GUARD_TOKEN_FILE ]] ||
       die "token file $GUARD_TOKEN_FILE is not readable"
     tmpdir="$(mktemp -d)"
@@ -53,10 +57,8 @@ contexts:
 current-context: local
 EOF
     export KUBECONFIG="$tmpdir/kubeconfig"
-  elif [[ -r $GUARD_ADMIN_KUBECONFIG ]]; then
-    export KUBECONFIG="$GUARD_ADMIN_KUBECONFIG"
   else
-    die "no Kubernetes credentials: neither a token file nor a readable $GUARD_ADMIN_KUBECONFIG"
+    die "no Kubernetes credentials: neither a readable $GUARD_ADMIN_KUBECONFIG nor a token file"
   fi
 }
 

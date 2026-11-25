@@ -375,7 +375,8 @@ let
           description = ''
             Path on the node to a Kubernetes bearer token allowed to
             `kubectl exec` into the toolbox deployment. Required on agents,
-            which have no admin kubeconfig; used on servers too when set.
+            which have no admin kubeconfig. Servers prefer the admin
+            kubeconfig and use this only if it is missing.
           '';
         };
 
